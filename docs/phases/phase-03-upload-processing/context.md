@@ -3,7 +3,8 @@ kind: phase
 name: phase-03-upload-processing
 sources_mtime:
   docs/project-plan.md: "2026-10-03T17:53:36-03:00"
-  docs/decisions/technical-decisions-phase-03-upload-processing.md: "2026-10-03T20:13:01-03:00"
+  docs/decisions/technical-decisions-phase-03-upload-processing.md: "2026-10-03T20:28:39-03:00"
+  docs/phases/phase-03-upload-processing/library-refs.md: "2026-10-03T20:31:49-03:00"
   docs/decisions/technical-decisions-openapi-docs-nestjs.md: "2026-10-03T18:04:32-03:00"
   docs/decisions/technical-decisions-next-frontend-config-base.md: "2026-10-03T18:04:32-03:00"
   docs/phases/phase-01-configuracao-base/context.md: "2026-10-03T18:04:32-03:00"
@@ -46,21 +47,23 @@ sources_mtime:
 
 | Ref | Source | Scope | Topic | Status | Decision | Libraries |
 |-----|--------|-------|-------|--------|----------|-----------|
-| phase-03-upload-processing/TD-01 | phase | Backend | Object Storage Backend (dev/test vs production) | decided | A (S3 API everywhere, SeaweedFS in dev/test) | — |
-| phase-03-upload-processing/TD-02 | phase | Cross-layer | Large-File Upload Protocol (10GB, resumable) | decided | A (S3 Multipart Upload, presigned part URLs, browser → storage) | — |
-| phase-03-upload-processing/TD-03 | phase | Frontend | Frontend Upload Client | pending | — | — |
-| phase-03-upload-processing/TD-04 | phase | Cross-layer | Storage Endpoint Topology (internal vs browser-facing URLs) | decided | A (two endpoints: `STORAGE_ENDPOINT` + `STORAGE_PUBLIC_ENDPOINT`, bucket CORS) | — |
-| phase-03-upload-processing/TD-05 | phase | Cross-layer | Media Delivery Strategy (streaming, download, thumbnails) | decided | C (hybrid: public-read thumbnails, presigned GET for playback and download) | — |
+| phase-03-upload-processing/TD-01 | phase | Backend | Object Storage Backend (dev/test vs production) | decided | A (S3 API everywhere, SeaweedFS in dev/test) | @aws-sdk/client-s3 |
+| phase-03-upload-processing/TD-02 | phase | Cross-layer | Large-File Upload Protocol (10GB, resumable) | decided | A (S3 Multipart Upload, presigned part URLs, browser → storage) | @aws-sdk/client-s3, @aws-sdk/s3-request-presigner |
+| phase-03-upload-processing/TD-03 | phase | Frontend | Frontend Upload Client | decided | Out of scope (UI deferred) | — |
+| phase-03-upload-processing/TD-04 | phase | Cross-layer | Storage Endpoint Topology (internal vs browser-facing URLs) | decided | A (two endpoints: `STORAGE_ENDPOINT` + `STORAGE_PUBLIC_ENDPOINT`, bucket CORS) | @aws-sdk/client-s3, @aws-sdk/s3-request-presigner |
+|     └─ Last revision: 2026-10-03 — Canonical key list extended with `STORAGE_THUMBNAILS_BUCKET` (public-read thumb… | | | | | | |
+| phase-03-upload-processing/TD-05 | phase | Cross-layer | Media Delivery Strategy (streaming, download, thumbnails) | decided | C (hybrid: public-read thumbnails, presigned GET for playback and download) | @aws-sdk/s3-request-presigner |
 | phase-03-upload-processing/TD-06 | phase | Backend | Playback Format: original vs normalized rendition vs HLS | decided | A (serve the original, gated by ffprobe compatibility check) | — |
-| phase-03-upload-processing/TD-07 | phase | Backend | Background Job Queue Technology | decided | A (BullMQ + Redis via `@nestjs/bullmq`) | — |
+| phase-03-upload-processing/TD-07 | phase | Backend | Background Job Queue Technology | decided | A (BullMQ + Redis via `@nestjs/bullmq`) | @nestjs/bullmq, bullmq |
 | phase-03-upload-processing/TD-08 | phase | Backend | Video Worker Topology | decided | A (same codebase, separate entrypoint + `video-worker` Compose service) | — |
 | phase-03-upload-processing/TD-09 | phase | Backend | FFmpeg Integration and Source-File Access | decided | A (spawn `ffprobe`/`ffmpeg` directly, input = presigned internal GET over HTTP Range) | — |
 | phase-03-upload-processing/TD-10 | phase | Cross-layer | Unique Short Video Identifier (public URL) | decided | A (random 11-char base64url via `node:crypto`, unique index, retry on conflict) | — |
 | phase-03-upload-processing/TD-11 | phase | Cross-layer | Video Lifecycle State Model | decided | B (two orthogonal fields: `processing_status` + `publication_status`) | — |
-| phase-03-upload-processing/TD-12 | phase | Cross-layer | Processing Status Propagation to the Frontend | pending | — | — |
-| phase-03-upload-processing/TD-13 | phase | Frontend | Frontend Test Strategy for Browser → Storage Traffic | pending | — | — |
+| phase-03-upload-processing/TD-12 | phase | Cross-layer | Processing Status Propagation to the Frontend | decided | Out of scope (UI deferred) | — |
+| phase-03-upload-processing/TD-13 | phase | Frontend | Frontend Test Strategy for Browser → Storage Traffic | decided | Out of scope (UI deferred) | — |
 | phase-03-upload-processing/TD-14 | phase | Cross-layer | Input Format Validation Before Upload | decided | A (declared-metadata allowlist at initiate + ffprobe as the authoritative gate) | — |
-| phase-03-upload-processing/TD-15 | phase | Cross-layer | Storage Bucket Topology (public thumbnails, private videos) | decided | B (two buckets: private `STORAGE_BUCKET` + public-read `STORAGE_THUMBNAILS_BUCKET`) | — |
+|     └─ Last revision: 2026-10-03 — MOV removed from the container allowlist. Final allowlist: `video/mp4` (extensi… | | | | | | |
+| phase-03-upload-processing/TD-15 | phase | Cross-layer | Storage Bucket Topology (public thumbnails, private videos) | decided | B (two buckets: private `STORAGE_BUCKET` + public-read `STORAGE_THUMBNAILS_BUCKET`) | @aws-sdk/client-s3 |
 
 _Source files:_
 
@@ -85,22 +88,30 @@ _Source files:_
 ### phase-03-upload-processing/TD-01
 
 **Recommendation:** every later TD (direct upload, presigned delivery, worker reading over HTTP Range) relies on S3 semantics, and only Option A tests those semantics locally. SeaweedFS avoids the MinIO end-of-life problem with a single container. If its bucket-CORS support turns out insufficient during implementation, Garage is the fallback, with no code change. Choosing A replaces the "local filesystem" strategy in the NestJS testing guide.
-**Libraries:** —
+**Libraries:** @aws-sdk/client-s3
 
 ### phase-03-upload-processing/TD-02
 
 **Recommendation:** it is the only option where video bytes never touch the application tier. That is the literal requirement, and it is the mechanism `config-base/TD-03` already reserved for media. Proposed parameters for `/plan-build`: `partSize` = 64MiB, returned by the API (single source; the client never hard-codes it). Max file size = 10 GiB, enforced at initiate from the declared `size` and re-checked at complete via `HeadObject`. Presigned part URL TTL ≈ 1h, re-signable on demand. Bucket lifecycle rule aborts incomplete multipart uploads after 24h. Depends on TD-01 (S3 semantics) and TD-04 (public endpoint + CORS).
+**Libraries:** @aws-sdk/client-s3, @aws-sdk/s3-request-presigner
+
+### phase-03-upload-processing/TD-03
+
+**Recommendation:** **Option B (hand-rolled uploader)**, with **Option A as the fallback** if the team prefers a library. TD-02 makes the API the owner of initiate/complete, because that is where the draft is created and processing is enqueued. Uppy's current major moved toward the client performing S3 calls itself, which fights that ownership. The resume edge case that matters most (the user must re-pick the file after a reload) is a browser constraint that Uppy does not remove either. The hand-rolled module is small, has no dependencies, and its retry and re-sign behavior can be pinned down in Vitest.
 **Libraries:** —
 
 ### phase-03-upload-processing/TD-04
 
 **Recommendation:** it respects the project's Compose-service-name rule for container-to-container traffic, needs no new infrastructure, and collapses to a single URL in prod. Canonical new keys for `/plan-build`: `STORAGE_ENDPOINT`, `STORAGE_PUBLIC_ENDPOINT`, `STORAGE_REGION`, `STORAGE_ACCESS_KEY`, `STORAGE_SECRET_KEY`, `STORAGE_BUCKET`, `STORAGE_FORCE_PATH_STYLE`, plus `STORAGE_CORS_ORIGIN` (the FE origin).
-**Libraries:** —
+**Libraries:** @aws-sdk/client-s3, @aws-sdk/s3-request-presigner
+
+**Revisions:**
+- 2026-10-03 — Canonical key list extended with `STORAGE_THUMBNAILS_BUCKET` (public-read thumbnails bucket); `STORAGE_BUCKET` is clarified as the private video bucket. Rationale: parameter added by TD-15 B (two-bucket topology), same option A.
 
 ### phase-03-upload-processing/TD-05
 
 **Recommendation:** thumbnails are displayed in volume across later phases and need stable URLs for caching, while video objects need signing-time control for drafts now and visibility later (Phase 04/05). Storage serves Range and `Content-Disposition` natively, so nothing heavy passes through Node. `<video src>` receives the presigned URL; MP4 Range playback works natively in browsers.
-**Libraries:** —
+**Libraries:** @aws-sdk/s3-request-presigner
 
 ### phase-03-upload-processing/TD-06
 
@@ -110,7 +121,7 @@ _Source files:_
 ### phase-03-upload-processing/TD-07
 
 **Recommendation:** official NestJS integration, built-in retry/backoff/progress for long FFmpeg jobs, and alignment with the project's existing skill rule and testing guide. Its one real gap versus pg-boss (non-transactional enqueue) is closed cheaply with `jobId = videoId` idempotency and a reconciliation sweep. If avoiding new infrastructure is a priority, pg-boss (B) is the honest alternative.
-**Libraries:** —
+**Libraries:** @nestjs/bullmq, bullmq
 
 ### phase-03-upload-processing/TD-08
 
@@ -132,15 +143,29 @@ _Source files:_
 **Recommendation:** the plan itself separates "processing" (Phase 03) from "draft → publication" (Phase 04). Two fields with clear owners let Phase 04 extend without redefining Phase 03's states, and give the FE a stable contract. Timestamps such as `processed_at` can still be added for audit.
 **Libraries:** —
 
+### phase-03-upload-processing/TD-12
+
+**Recommendation:** processing is short under TD-06 A and TD-09 A, so polling's latency is irrelevant, and it is the only option that fits the strict BFF and the existing MSW/Route-Handler test scaffold without new infrastructure. SSE can be revisited if transcoding (TD-06 B/C) makes jobs long.
+**Libraries:** —
+
+### phase-03-upload-processing/TD-13
+
+**Recommendation:** it keeps every existing invariant (real BFF, faked upstream, no `/api/**` interception) and makes upload failure modes cheap to test. Real S3 behavior (CORS, presigned multipart, Range) is verified once, where it belongs: in `nestjs-project` integration tests against the emulator.
+**Libraries:** —
+
 ### phase-03-upload-processing/TD-14
 
 **Recommendation:** A alone leaves the costly case (wrong codec in an MP4/MOV) undetected until after a 10GB transfer, and B closes most of that gap with no dependency, testing the same "browser-playable" property TD-06 A promises. C is the stricter upgrade if browser-dependent verdicts prove noisy, and since it only touches the FE, it needs no API change. D adds payload and complexity without real trust. Proposed parameters for `/plan-build`: container allowlist MP4/MOV/WebM (extension and MIME, with extension fallback when `File.type` is empty). The ffprobe codec allowlist follows TD-06 A (video `h264`, `vp8`, `vp9`, `av1`; audio `aac`, `mp3`, `opus`, `vorbis`; HEVC excluded). Initiate rejects with HTTP 415/422 plus a domain code. Worker rejection sets `processing_status = failed` with a reason code consumed by TD-12. The FE probe has a timeout of a few seconds and falls back to letting ffprobe decide. The failure semantics of the `failed` state are AMB-2's concern, not this TD's.
 **Libraries:** —
 
+**Revisions:**
+- 2026-10-03 — Browser playability probe parameter removed from this phase: codec rejection happens only at the worker's ffprobe gate; the FE probe is a recorded follow-up for the Phase 03 frontend slice. Rationale: Phase 03 delivers backend only (UI deferred); keeps A without FE scope.
+- 2026-10-03 — MOV removed from the container allowlist. Final allowlist: `video/mp4` (extensions `.mp4`, `.m4v`) and `video/webm` (`.webm`). Rationale: TD-06 A serves the original file and the playback contract is MP4/WebM; `video/quicktime` is not reliably playable across browsers.
+
 ### phase-03-upload-processing/TD-15
 
 **Recommendation:** it makes "videos are never public" a structural guarantee rather than a correctly written policy. It relies only on bucket-level public read, the one primitive that SeaweedFS (without the 2026-09 policy fix), AWS and Garage all support, so it keeps TD-01's fallback alive. It matches TD-05 C as decided. The price is one env key, recorded as a Revision of TD-04. Proposed parameters for `/plan-build`: new key `STORAGE_THUMBNAILS_BUCKET` (added to the TD-04 list). The DB stores only the thumbnail **object key**, and the API composes the URL at serialization time from `STORAGE_PUBLIC_ENDPOINT` + bucket + key (path-style per `STORAGE_FORCE_PATH_STYLE`), so changing the endpoint needs no data migration. Keys are versioned (`{shortId}/{random-or-hash}.jpg`), so a replaced thumbnail (Phase 04 custom upload) gets a new URL, and objects are written with `Cache-Control: public, max-age=31536000, immutable`. Anonymous access on the thumbnails bucket is `Read` only, with no `List`. The FE adds the public storage host to `next/image` `remotePatterns`.
-**Libraries:** —
+**Libraries:** @aws-sdk/client-s3
 
 ## Inherited Decisions Detail
 

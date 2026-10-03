@@ -53,6 +53,7 @@ _Subprojects in scope:_
 **Recommendation:** **Option A (S3 API everywhere, SeaweedFS in dev/test)** — every later TD (direct upload, presigned delivery, worker reading over HTTP Range) relies on S3 semantics, and only Option A tests those semantics locally. SeaweedFS avoids the MinIO end-of-life problem with a single container. If its bucket-CORS support turns out insufficient during implementation, Garage is the fallback, with no code change. Choosing A replaces the "local filesystem" strategy in the NestJS testing guide.
 
 **Decision:** A (S3 API everywhere — SeaweedFS in dev/test)
+**Libraries:** @aws-sdk/client-s3
 
 **Note:** Chosen over MinIO, which the challenge statement and `CLAUDE.md` mention as the example S3 store. Evidence gathered on 2026-10-03 before deciding: `docker pull minio/minio:latest` (and pinned tags `RELEASE.2025-04-22T22-12-26Z`, `RELEASE.2024-12-18T13-15-44Z`) fails with "repository does not exist"; `quay.io/minio/minio` returns 401; `bitnami/minio` is no longer published. The only working MinIO build found was Chainguard's (`cgr.dev/chainguard/minio`), which booted and created a bucket in a smoke test, but its free tier ships only a rolling `latest` tag, so it cannot be pinned by version. SeaweedFS publishes versioned images and speaks the S3 API the rest of the phase relies on. Because every consumer talks S3 (TD-02, TD-04, TD-05, TD-09), swapping SeaweedFS for MinIO or AWS S3 is a configuration change (endpoint + credentials), not a code change.
 
@@ -86,6 +87,7 @@ _Subprojects in scope:_
 **Recommendation:** **Option A (S3 multipart with presigned part URLs, direct to storage)** — it is the only option where video bytes never touch the application tier. That is the literal requirement, and it is the mechanism `config-base/TD-03` already reserved for media. Proposed parameters for `/plan-build`: `partSize` = 64MiB, returned by the API (single source; the client never hard-codes it). Max file size = 10 GiB, enforced at initiate from the declared `size` and re-checked at complete via `HeadObject`. Presigned part URL TTL ≈ 1h, re-signable on demand. Bucket lifecycle rule aborts incomplete multipart uploads after 24h. Depends on TD-01 (S3 semantics) and TD-04 (public endpoint + CORS).
 
 **Decision:** A (S3 Multipart Upload with presigned part URLs — browser → storage direct)
+**Libraries:** @aws-sdk/client-s3, @aws-sdk/s3-request-presigner
 
 ---
 
@@ -116,7 +118,7 @@ _Subprojects in scope:_
 
 **Recommendation:** **Option B (hand-rolled uploader)**, with **Option A as the fallback** if the team prefers a library. TD-02 makes the API the owner of initiate/complete, because that is where the draft is created and processing is enqueued. Uppy's current major moved toward the client performing S3 calls itself, which fights that ownership. The resume edge case that matters most (the user must re-pick the file after a reload) is a browser constraint that Uppy does not remove either. The hand-rolled module is small, has no dependencies, and its retry and re-sign behavior can be pinned down in Vitest.
 
-**Decision:** _[pending]_
+**Decision:** Out of scope — Phase 03 delivers backend only (UI deferred); revisit in the Phase 03 frontend slice
 
 ---
 
@@ -148,6 +150,10 @@ _Subprojects in scope:_
 **Recommendation:** **Option A (internal + public endpoint, bucket CORS)** — it respects the project's Compose-service-name rule for container-to-container traffic, needs no new infrastructure, and collapses to a single URL in prod. Canonical new keys for `/plan-build`: `STORAGE_ENDPOINT`, `STORAGE_PUBLIC_ENDPOINT`, `STORAGE_REGION`, `STORAGE_ACCESS_KEY`, `STORAGE_SECRET_KEY`, `STORAGE_BUCKET`, `STORAGE_FORCE_PATH_STYLE`, plus `STORAGE_CORS_ORIGIN` (the FE origin).
 
 **Decision:** A (Two endpoints — internal `STORAGE_ENDPOINT` + browser-facing `STORAGE_PUBLIC_ENDPOINT`, bucket CORS)
+**Libraries:** @aws-sdk/client-s3, @aws-sdk/s3-request-presigner
+
+**Revisions:**
+- 2026-10-03 — Canonical key list extended with `STORAGE_THUMBNAILS_BUCKET` (public-read thumbnails bucket); `STORAGE_BUCKET` is clarified as the private video bucket. Rationale: parameter added by TD-15 B (two-bucket topology), same option A.
 
 ---
 
@@ -184,6 +190,7 @@ _Subprojects in scope:_
 **Recommendation:** **Option C (hybrid)** — thumbnails are displayed in volume across later phases and need stable URLs for caching, while video objects need signing-time control for drafts now and visibility later (Phase 04/05). Storage serves Range and `Content-Disposition` natively, so nothing heavy passes through Node. `<video src>` receives the presigned URL; MP4 Range playback works natively in browsers.
 
 **Decision:** C (Hybrid — thumbnails public-read, video playback and download via presigned GET)
+**Libraries:** @aws-sdk/s3-request-presigner
 
 ---
 
@@ -246,6 +253,7 @@ _Subprojects in scope:_
 **Recommendation:** **Option A (BullMQ + Redis)** — official NestJS integration, built-in retry/backoff/progress for long FFmpeg jobs, and alignment with the project's existing skill rule and testing guide. Its one real gap versus pg-boss (non-transactional enqueue) is closed cheaply with `jobId = videoId` idempotency and a reconciliation sweep. If avoiding new infrastructure is a priority, pg-boss (B) is the honest alternative.
 
 **Decision:** A (BullMQ + Redis via `@nestjs/bullmq`)
+**Libraries:** @nestjs/bullmq, bullmq
 
 ---
 
@@ -405,7 +413,7 @@ _Subprojects in scope:_
 
 **Recommendation:** **Option A (polling via BFF)** — processing is short under TD-06 A and TD-09 A, so polling's latency is irrelevant, and it is the only option that fits the strict BFF and the existing MSW/Route-Handler test scaffold without new infrastructure. SSE can be revisited if transcoding (TD-06 B/C) makes jobs long.
 
-**Decision:** _[pending]_
+**Decision:** Out of scope — Phase 03 delivers backend only (UI deferred); revisit in the Phase 03 frontend slice
 
 ---
 
@@ -431,7 +439,7 @@ _Subprojects in scope:_
 
 **Recommendation:** **Option A (fake storage origin, intercepted at the browser in E2E and by MSW in Vitest)** — it keeps every existing invariant (real BFF, faked upstream, no `/api/**` interception) and makes upload failure modes cheap to test. Real S3 behavior (CORS, presigned multipart, Range) is verified once, where it belongs: in `nestjs-project` integration tests against the emulator.
 
-**Decision:** _[pending]_
+**Decision:** Out of scope — Phase 03 delivers backend only (UI deferred); revisit in the Phase 03 frontend slice
 
 ---
 
@@ -471,6 +479,10 @@ _Subprojects in scope:_
 
 **Note:** Diverges from the Recommendation (B) by scope, not by merit: the browser playability probe of Option B lives in `next-frontend`, which is out of scope for this backend-only delivery (UI deferred in `/plan-context 03`). Option A is the backend half of B, so the probe can be added later by the frontend slice without changing this contract. The initiate endpoint rejects any declared MIME type outside the allowlist (`video/mp4`, `video/webm`, the browser-playable containers per TD-06 A); ffprobe in the worker remains the authoritative codec check and marks the video `failed` when it is not playable.
 
+**Revisions:**
+- 2026-10-03 — Browser playability probe parameter removed from this phase: codec rejection happens only at the worker's ffprobe gate; the FE probe is a recorded follow-up for the Phase 03 frontend slice. Rationale: Phase 03 delivers backend only (UI deferred); keeps A without FE scope.
+- 2026-10-03 — MOV removed from the container allowlist. Final allowlist: `video/mp4` (extensions `.mp4`, `.m4v`) and `video/webm` (`.webm`). Rationale: TD-06 A serves the original file and the playback contract is MP4/WebM; `video/quicktime` is not reliably playable across browsers.
+
 ---
 
 ## TD-15: Storage Bucket Topology for Public Thumbnails and Private Videos
@@ -501,6 +513,7 @@ _Subprojects in scope:_
 **Recommendation:** **Option B (two buckets: private videos, public-read thumbnails)** — it makes "videos are never public" a structural guarantee rather than a correctly written policy. It relies only on bucket-level public read, the one primitive that SeaweedFS (without the 2026-09 policy fix), AWS and Garage all support, so it keeps TD-01's fallback alive. It matches TD-05 C as decided. The price is one env key, recorded as a Revision of TD-04. Proposed parameters for `/plan-build`: new key `STORAGE_THUMBNAILS_BUCKET` (added to the TD-04 list). The DB stores only the thumbnail **object key**, and the API composes the URL at serialization time from `STORAGE_PUBLIC_ENDPOINT` + bucket + key (path-style per `STORAGE_FORCE_PATH_STYLE`), so changing the endpoint needs no data migration. Keys are versioned (`{shortId}/{random-or-hash}.jpg`), so a replaced thumbnail (Phase 04 custom upload) gets a new URL, and objects are written with `Cache-Control: public, max-age=31536000, immutable`. Anonymous access on the thumbnails bucket is `Read` only, with no `List`. The FE adds the public storage host to `next/image` `remotePatterns`.
 
 **Decision:** B (Two buckets — private `STORAGE_BUCKET` for videos + public-read `STORAGE_THUMBNAILS_BUCKET` for thumbnails)
+**Libraries:** @aws-sdk/client-s3
 
 **Note:** Adds `STORAGE_THUMBNAILS_BUCKET` to the TD-04 environment keys (to be recorded as a TD-04 Revision by `/plan-resolve 03`). Chosen because the anonymous-read grant then applies to a whole bucket — the one policy shape SeaweedFS is confirmed to honor — instead of depending on prefix-scoped policies that are unconfirmed in the emulator.
 
