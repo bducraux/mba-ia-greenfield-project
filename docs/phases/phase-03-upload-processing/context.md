@@ -3,7 +3,7 @@ kind: phase
 name: phase-03-upload-processing
 sources_mtime:
   docs/project-plan.md: "2026-10-03T17:53:36-03:00"
-  docs/decisions/technical-decisions-phase-03-upload-processing.md: "2026-10-03T18:53:18-03:00"
+  docs/decisions/technical-decisions-phase-03-upload-processing.md: "2026-10-03T20:13:01-03:00"
   docs/decisions/technical-decisions-openapi-docs-nestjs.md: "2026-10-03T18:04:32-03:00"
   docs/decisions/technical-decisions-next-frontend-config-base.md: "2026-10-03T18:04:32-03:00"
   docs/phases/phase-01-configuracao-base/context.md: "2026-10-03T18:04:32-03:00"
@@ -32,9 +32,9 @@ sources_mtime:
 
 **Out of scope:** _Not specified._
 **Deliverables:** upload de até 10GB funcional, processamento automático do vídeo, streaming funcionando, URLs únicas geradas.
-**Affected subprojects:** _The phase block names no subprojects._
+**Affected subprojects:** _No subprojects are named explicitly for this phase in project-plan.md._
 **Deferred subprojects:** _None._
-**Sequencing notes:** > Depende de: Fase 01, Fase 02
+**Sequencing notes:** "> Depende de: Fase 01, Fase 02" — Phase intro: "Upload de arquivos grandes sem travar o sistema, processamento automático do vídeo e geração de URL única."
 
 **Neighbors (for boundary detection only):**
 
@@ -43,36 +43,38 @@ sources_mtime:
 
 ## Decisions Index
 
-| Ref | Source | Scope | Topic | Status | Decision | Libraries |
-|-----|--------|-------|-------|--------|----------|-----------|
-| phase-03-upload-processing/TD-01 | phase | Backend | Object Storage Backend (dev/test vs production) | decided | A (S3 API everywhere, SeaweedFS in dev/test) | — |
-| phase-03-upload-processing/TD-02 | phase | Cross-layer | Large-File Upload Protocol (10GB, resumable) | decided | A (S3 Multipart Upload, presigned part URLs, browser → storage direct) | — |
-| phase-03-upload-processing/TD-03 | phase | Frontend | Frontend Upload Client | pending | — | — |
-| phase-03-upload-processing/TD-04 | phase | Cross-layer | Storage Endpoint Topology (internal vs browser-facing URLs) | decided | A (Two endpoints: `STORAGE_ENDPOINT` + `STORAGE_PUBLIC_ENDPOINT`, bucket CORS) | — |
-| phase-03-upload-processing/TD-05 | phase | Cross-layer | Media Delivery Strategy (streaming, download, thumbnails) | decided | C (Hybrid: public-read thumbnails, presigned GET for playback and download) | — |
-| phase-03-upload-processing/TD-06 | phase | Backend | Playback Format — original file vs normalized rendition… | decided | A (Serve original upload, gated by ffprobe compatibility check) | — |
-| phase-03-upload-processing/TD-07 | phase | Backend | Background Job Queue Technology | decided | A (BullMQ + Redis via `@nestjs/bullmq`) | — |
-| phase-03-upload-processing/TD-08 | phase | Backend | Video Worker Topology | decided | A (Same `nestjs-project` codebase, separate entrypoint + `video-worker` Compose service) | — |
-| phase-03-upload-processing/TD-09 | phase | Backend | FFmpeg Integration and Source-File Access | decided | A (Spawn `ffprobe`/`ffmpeg` directly, input = presigned internal GET URL over HTTP Range) | — |
-| phase-03-upload-processing/TD-10 | phase | Cross-layer | Unique Short Video Identifier (public URL) | decided | A (Random 11-char base64url from `node:crypto` + unique index + retry on conflict) | — |
-| phase-03-upload-processing/TD-11 | phase | Cross-layer | Video Lifecycle State Model | decided | B (Two orthogonal fields: `processing_status` + `publication_status`) | — |
-| phase-03-upload-processing/TD-12 | phase | Cross-layer | Processing Status Propagation to the Frontend | pending | — | — |
-| phase-03-upload-processing/TD-13 | phase | Frontend | Frontend Test Strategy for Browser → Storage Traffic | pending | — | — |
+| Ref | Source | Scope | Topic | Status | Decision | Libraries | Renders in |
+|-----|--------|-------|-------|--------|----------|-----------|------------|
+| phase-03-upload-processing/TD-01 | phase | Backend | Object Storage Backend (dev/test vs production) | decided | A (S3 API everywhere, SeaweedFS in dev/test) | — | — |
+| phase-03-upload-processing/TD-02 | phase | Cross-layer | Large-File Upload Protocol (10GB, resumable) | decided | A (S3 Multipart, presigned part URLs, browser to storage) | — | — |
+| phase-03-upload-processing/TD-03 | phase | Frontend | Frontend Upload Client | pending | — | — | — |
+| phase-03-upload-processing/TD-04 | phase | Cross-layer | Storage Endpoint Topology (internal vs browser-facing URLs) | decided | A (STORAGE_ENDPOINT + STORAGE_PUBLIC_ENDPOINT, bucket CORS) | — | — |
+| phase-03-upload-processing/TD-05 | phase | Cross-layer | Media Delivery Strategy (streaming, download, thumbnails) | decided | C (Hybrid: public-read thumbnails, presigned GET for video) | — | — |
+| phase-03-upload-processing/TD-06 | phase | Backend | Playback Format: original vs normalized rendition vs HLS | decided | A (Original upload, gated by ffprobe compatibility) | — | — |
+| phase-03-upload-processing/TD-07 | phase | Backend | Background Job Queue Technology | decided | A (BullMQ + Redis via @nestjs/bullmq) | — | — |
+| phase-03-upload-processing/TD-08 | phase | Backend | Video Worker Topology | decided | A (Same codebase, separate entrypoint + video-worker service) | — | — |
+| phase-03-upload-processing/TD-09 | phase | Backend | FFmpeg Integration and Source-File Access | decided | A (Spawn ffprobe/ffmpeg, input = presigned internal GET) | — | — |
+| phase-03-upload-processing/TD-10 | phase | Cross-layer | Unique Short Video Identifier (public URL) | decided | A (Random 11-char base64url + unique index + retry) | — | — |
+| phase-03-upload-processing/TD-11 | phase | Cross-layer | Video Lifecycle State Model | decided | B (processing_status + publication_status) | — | — |
+| phase-03-upload-processing/TD-12 | phase | Cross-layer | Processing Status Propagation to the Frontend | pending | — | — | — |
+| phase-03-upload-processing/TD-13 | phase | Frontend | Frontend Test Strategy for Browser to Storage Traffic | pending | — | — | — |
+| phase-03-upload-processing/TD-14 | phase | Cross-layer | Input Format Validation Before Upload | decided | A (Declared-metadata allowlist at initiate + ffprobe gate) | — | — |
+| phase-03-upload-processing/TD-15 | phase | Cross-layer | Storage Bucket Topology: Public Thumbnails, Private Videos | decided | B (Private STORAGE_BUCKET + public-read STORAGE_THUMBNAILS_BUCKET) | — | — |
 
 _Source files:_
 
-- phase-03-upload-processing — `docs/decisions/technical-decisions-phase-03-upload-processing.md` (scope_type: phase)
+- phase-03-upload-processing — `docs/decisions/technical-decisions-phase-03-upload-processing.md` (scope_type: phase, related_phases: [3])
 
 ## Capability Coverage
 
 | Capability (from project-plan.md) | Covered by |
 |-----------------------------------|------------|
-| Serviço de armazenamento de arquivos (vídeos e thumbnails) | phase-03-upload-processing/TD-01, phase-03-upload-processing/TD-04 |
+| Serviço de armazenamento de arquivos (vídeos e thumbnails) | phase-03-upload-processing/TD-01, phase-03-upload-processing/TD-04, phase-03-upload-processing/TD-15 |
 | Serviço de processamento em segundo plano (filas) | phase-03-upload-processing/TD-07, phase-03-upload-processing/TD-08 |
-| Upload de vídeos com suporte a arquivos de até 10GB sem impacto na performance | phase-03-upload-processing/TD-02, phase-03-upload-processing/TD-03, phase-03-upload-processing/TD-04, phase-03-upload-processing/TD-13 |
+| Upload de vídeos com suporte a arquivos de até 10GB sem impacto na performance | phase-03-upload-processing/TD-02, phase-03-upload-processing/TD-03, phase-03-upload-processing/TD-04, phase-03-upload-processing/TD-13, phase-03-upload-processing/TD-14 |
 | Pré-cadastro automático do vídeo como rascunho ao iniciar o upload | phase-03-upload-processing/TD-02, phase-03-upload-processing/TD-11 |
-| Processamento automático do vídeo após upload (extração de duração e metadados) | phase-03-upload-processing/TD-06, phase-03-upload-processing/TD-08, phase-03-upload-processing/TD-09, phase-03-upload-processing/TD-12 |
-| Geração automática de thumbnail a partir de um frame do vídeo | phase-03-upload-processing/TD-05, phase-03-upload-processing/TD-08, phase-03-upload-processing/TD-09 |
+| Processamento automático do vídeo após upload (extração de duração e metadados) | phase-03-upload-processing/TD-06, phase-03-upload-processing/TD-08, phase-03-upload-processing/TD-09, phase-03-upload-processing/TD-12, phase-03-upload-processing/TD-14 |
+| Geração automática de thumbnail a partir de um frame do vídeo | phase-03-upload-processing/TD-05, phase-03-upload-processing/TD-08, phase-03-upload-processing/TD-09, phase-03-upload-processing/TD-15 |
 | URL única por vídeo, sem conflito com outros vídeos | phase-03-upload-processing/TD-10 |
 | Reprodução via streaming (sem necessidade de download completo) | phase-03-upload-processing/TD-04, phase-03-upload-processing/TD-05, phase-03-upload-processing/TD-06 |
 | Download do vídeo pelo usuário | phase-03-upload-processing/TD-04, phase-03-upload-processing/TD-05 |
@@ -81,52 +83,62 @@ _Source files:_
 
 ### phase-03-upload-processing/TD-01
 
-**Recommendation:** every later TD (direct upload, presigned delivery, worker reading over HTTP Range) relies on S3 semantics, and only Option A tests those semantics locally. SeaweedFS avoids the MinIO end-of-life problem with a single container. If its bucket-CORS support turns out insufficient during implementation, Garage is the fallback, with no code change. Choosing A replaces the "local filesystem" strategy in the NestJS testing guide.
+**Recommendation:** Every later TD (direct upload, presigned delivery, worker reading over HTTP Range) relies on S3 semantics, and only Option A tests those semantics locally. SeaweedFS avoids the MinIO end-of-life problem with a single container. If its bucket-CORS support turns out insufficient during implementation, Garage is the fallback, with no code change. Choosing A replaces the "local filesystem" strategy in the NestJS testing guide.
 **Libraries:** —
 
 ### phase-03-upload-processing/TD-02
 
-**Recommendation:** it is the only option where video bytes never touch the application tier. That is the literal requirement, and it is the mechanism `config-base/TD-03` already reserved for media. Proposed parameters for `/plan-build`: `partSize` = 64MiB, returned by the API (single source; the client never hard-codes it). Max file size = 10 GiB, enforced at initiate from the declared `size` and re-checked at complete via `HeadObject`. Presigned part URL TTL ≈ 1h, re-signable on demand. Bucket lifecycle rule aborts incomplete multipart uploads after 24h. Depends on TD-01 (S3 semantics) and TD-04 (public endpoint + CORS).
+**Recommendation:** It is the only option where video bytes never touch the application tier. That is the literal requirement, and it is the mechanism `config-base/TD-03` already reserved for media. Proposed parameters for `/plan-build`: `partSize` = 64MiB, returned by the API (single source; the client never hard-codes it). Max file size = 10 GiB, enforced at initiate from the declared `size` and re-checked at complete via `HeadObject`. Presigned part URL TTL ≈ 1h, re-signable on demand. Bucket lifecycle rule aborts incomplete multipart uploads after 24h. Depends on TD-01 (S3 semantics) and TD-04 (public endpoint + CORS).
 **Libraries:** —
 
 ### phase-03-upload-processing/TD-04
 
-**Recommendation:** it respects the project's Compose-service-name rule for container-to-container traffic, needs no new infrastructure, and collapses to a single URL in prod. Canonical new keys for `/plan-build`: `STORAGE_ENDPOINT`, `STORAGE_PUBLIC_ENDPOINT`, `STORAGE_REGION`, `STORAGE_ACCESS_KEY`, `STORAGE_SECRET_KEY`, `STORAGE_BUCKET`, `STORAGE_FORCE_PATH_STYLE`, plus `STORAGE_CORS_ORIGIN` (the FE origin).
+**Recommendation:** It respects the project's Compose-service-name rule for container-to-container traffic, needs no new infrastructure, and collapses to a single URL in prod. Canonical new keys for `/plan-build`: `STORAGE_ENDPOINT`, `STORAGE_PUBLIC_ENDPOINT`, `STORAGE_REGION`, `STORAGE_ACCESS_KEY`, `STORAGE_SECRET_KEY`, `STORAGE_BUCKET`, `STORAGE_FORCE_PATH_STYLE`, plus `STORAGE_CORS_ORIGIN` (the FE origin).
 **Libraries:** —
 
 ### phase-03-upload-processing/TD-05
 
-**Recommendation:** thumbnails are displayed in volume across later phases and need stable URLs for caching, while video objects need signing-time control for drafts now and visibility later (Phase 04/05). Storage serves Range and `Content-Disposition` natively, so nothing heavy passes through Node. `<video src>` receives the presigned URL; MP4 Range playback works natively in browsers.
+**Recommendation:** Thumbnails are displayed in volume across later phases and need stable URLs for caching, while video objects need signing-time control for drafts now and visibility later (Phase 04/05). Storage serves Range and `Content-Disposition` natively, so nothing heavy passes through Node. `<video src>` receives the presigned URL; MP4 Range playback works natively in browsers.
 **Libraries:** —
 
 ### phase-03-upload-processing/TD-06
 
-**Recommendation:** it matches the literal phase scope (metadata + thumbnail), keeps storage at 1× (§4 cost concern) and keeps the worker fast. The playback contract (a single MP4/WebM URL in `<video src>`) is the same contract Option B would produce, so upgrading to B later is a worker-only change with no FE or API break. HLS (C) is a separate future initiative.
+**Recommendation:** It matches the literal phase scope (metadata + thumbnail), keeps storage at 1× (§4 cost concern) and keeps the worker fast. The playback contract (a single MP4/WebM URL in `<video src>`) is the same contract Option B would produce, so upgrading to B later is a worker-only change with no FE or API break. HLS (C) is a separate future initiative.
 **Libraries:** —
 
 ### phase-03-upload-processing/TD-07
 
-**Recommendation:** official NestJS integration, built-in retry/backoff/progress for long FFmpeg jobs, and alignment with the project's existing skill rule and testing guide. Its one real gap versus pg-boss (non-transactional enqueue) is closed cheaply with `jobId = videoId` idempotency and a reconciliation sweep. If avoiding new infrastructure is a priority, pg-boss (B) is the honest alternative.
+**Recommendation:** Official NestJS integration, built-in retry/backoff/progress for long FFmpeg jobs, and alignment with the project's existing skill rule and testing guide. Its one real gap versus pg-boss (non-transactional enqueue) is closed cheaply with `jobId = videoId` idempotency and a reconciliation sweep. If avoiding new infrastructure is a priority, pg-boss (B) is the honest alternative.
 **Libraries:** —
 
 ### phase-03-upload-processing/TD-08
 
-**Recommendation:** it delivers the diagram's isolated worker container without duplicating the domain layer. API latency is protected by process and container isolation, and the shared code (entities, config, storage) stays single-sourced.
+**Recommendation:** It delivers the diagram's isolated worker container without duplicating the domain layer. API latency is protected by process and container isolation, and the shared code (entities, config, storage) stays single-sourced.
 **Libraries:** —
 
 ### phase-03-upload-processing/TD-09
 
-**Recommendation:** the job only needs metadata and one frame, so reading the whole 10GB file (B) is wasted IO and disk risk. Spawning the CLI directly is now the upstream-recommended path since `fluent-ffmpeg` was deprecated. If TD-06 later moves to transcoding, B's temp-file approach can be added for that job type only. Thumbnail frame choice (e.g., ~10% of duration, clamped) is an implementation detail for `/plan-build`.
+**Recommendation:** The job only needs metadata and one frame, so reading the whole 10GB file (B) is wasted IO and disk risk. Spawning the CLI directly is now the upstream-recommended path since `fluent-ffmpeg` was deprecated. If TD-06 later moves to transcoding, B's temp-file approach can be added for that job type only. Thumbnail frame choice (e.g., ~10% of duration, clamped) is an implementation detail for `/plan-build`.
 **Libraries:** —
 
 ### phase-03-upload-processing/TD-10
 
-**Recommendation:** it meets "short + unique + never conflicting" with no dependency, it doesn't reveal enumeration order (which unlisted videos will need), and the DB constraint makes uniqueness a guarantee rather than a probability.
+**Recommendation:** It meets "short + unique + never conflicting" with no dependency, it doesn't reveal enumeration order (which unlisted videos will need), and the DB constraint makes uniqueness a guarantee rather than a probability.
 **Libraries:** —
 
 ### phase-03-upload-processing/TD-11
 
-**Recommendation:** the plan itself separates "processing" (Phase 03) from "draft → publication" (Phase 04). Two fields with clear owners let Phase 04 extend without redefining Phase 03's states, and give the FE a stable contract. Timestamps such as `processed_at` can still be added for audit.
+**Recommendation:** The plan itself separates "processing" (Phase 03) from "draft → publication" (Phase 04). Two fields with clear owners let Phase 04 extend without redefining Phase 03's states, and give the FE a stable contract. Timestamps such as `processed_at` can still be added for audit.
+**Libraries:** —
+
+### phase-03-upload-processing/TD-14
+
+**Recommendation:** A alone leaves the costly case (wrong codec in an MP4/MOV) undetected until after a 10GB transfer, and B closes most of that gap with no dependency, testing the same "browser-playable" property TD-06 A promises. C is the stricter upgrade if browser-dependent verdicts prove noisy, and since it only touches the FE, it needs no API change. D adds payload and complexity without real trust. Proposed parameters for `/plan-build`: container allowlist MP4/MOV/WebM (extension and MIME, with extension fallback when `File.type` is empty). The ffprobe codec allowlist follows TD-06 A (video `h264`, `vp8`, `vp9`, `av1`; audio `aac`, `mp3`, `opus`, `vorbis`; HEVC excluded). Initiate rejects with HTTP 415/422 plus a domain code. Worker rejection sets `processing_status = failed` with a reason code consumed by TD-12. The FE probe has a timeout of a few seconds and falls back to letting ffprobe decide. The failure semantics of the `failed` state are AMB-2's concern, not this TD's.
+**Libraries:** —
+
+### phase-03-upload-processing/TD-15
+
+**Recommendation:** It makes "videos are never public" a structural guarantee rather than a correctly written policy. It relies only on bucket-level public read, the one primitive that SeaweedFS (without the 2026-09 policy fix), AWS and Garage all support, so it keeps TD-01's fallback alive. It matches TD-05 C as decided. The price is one env key, recorded as a Revision of TD-04. Proposed parameters for `/plan-build`: new key `STORAGE_THUMBNAILS_BUCKET` (added to the TD-04 list). The DB stores only the thumbnail **object key**, and the API composes the URL at serialization time from `STORAGE_PUBLIC_ENDPOINT` + bucket + key (path-style per `STORAGE_FORCE_PATH_STYLE`), so changing the endpoint needs no data migration. Keys are versioned (`{shortId}/{random-or-hash}.jpg`), so a replaced thumbnail (Phase 04 custom upload) gets a new URL, and objects are written with `Cache-Control: public, max-age=31536000, immutable`. Anonymous access on the thumbnails bucket is `Read` only, with no `List`. The FE adds the public storage host to `next/image` `remotePatterns`.
 **Libraries:** —
 
 ## Inherited Decisions Detail
@@ -293,8 +305,8 @@ _Source files:_
 - Env variables are validated by a Joi schema in `src/config/env.validation.ts`, passed to `ConfigModule.forRoot({ validationSchema, validationOptions... _(from phase 01)_
 - Config is injected into modules via `ConfigType<typeof xxxConfig>` and `@Inject(xxxConfig.KEY)`; the same factory is importable as a plain function... _(from phase 01)_
 - `data-source.ts` loads `.env` via `import 'dotenv/config'` at the top, then imports `databaseConfig` and calls it as a plain function. _(from phase 01)_
-- Database connection parameters (host, port, etc.) are sourced from a single `databaseConfig` factory — never duplicated between `AppModule` and... _(from phase 01)_
-- `TypeOrmModule.forRootAsync` is used (not `forRoot`), with `imports: [ConfigModule]`, `inject: [databaseConfig.KEY]`, `useFactory` returning options... _(from phase 01)_
+- Database connection parameters (host, port, etc.) are sourced from a single `databaseConfig` factory — never duplicated between `AppModule` and `data-source.ts`. _(from phase 01)_
+- `TypeOrmModule.forRootAsync` is used (not `forRoot`), with `imports: [ConfigModule]`, `inject: [databaseConfig.KEY]`, `useFactory` returning... _(from phase 01)_
 
 ## Inherited Deferred Capabilities
 
