@@ -435,29 +435,102 @@ _Subprojects in scope:_
 
 ---
 
+## TD-14: Input Format Validation Before Upload (allowlist at initiate + ffprobe gate)
+
+**Scope:** Cross-layer
+
+**Capability:** Transversal — covers: "Upload de vídeos com suporte a arquivos de até 10GB sem impacto na performance", "Processamento automático do vídeo após upload (extração de duração e metadados)"
+
+**Context:** TD-06 A serves the original file, so only browser-playable inputs are acceptable: MP4/MOV (H.264/AAC) and WebM (VP8/VP9/AV1, Opus/Vorbis), with the worker's ffprobe as the gate. TD-02 A fixes the size check (10 GiB at initiate and at complete) but not the **format** check. Under presigned multipart, the API never sees the bytes, and S3 parts are unreadable until `CompleteMultipartUpload`. So without a pre-upload check, an unsupported file is only rejected after up to 10GB has been transferred. The decision sets the initiate payload (`fileName`, `mimeType`, `size`), the accepted-format list shared by the API DTO, the FE pre-check and the worker's ffprobe allowlist, and the domain error codes on each side (`phase-02-auth/TD-07` envelope). This TD refines TD-06 A's "client pre-checks MIME/extension"; it does not reopen it.
+
+**Options:**
+
+### Option A: Declared-metadata allowlist at initiate + ffprobe as the authoritative gate
+- The FE checks extension and `File.type` against the allowlist. Initiate re-validates the declared `mimeType` and extension (`.mp4`/`.m4v`/`.mov`/`.webm` ↔ `video/mp4`, `video/quicktime`, `video/webm`) and rejects with a domain code (e.g., `VIDEO_UNSUPPORTED_FORMAT`) before creating the draft or the multipart upload. The worker's ffprobe checks container and codecs and sets `processing_status = failed` with a reason code.
+- **Pros:** No dependencies. A single list mirrored in the DTO, the FE constant and the worker. Blocks wrong containers (AVI, MKV, WMV) before any byte moves.
+- **Cons:** Declared metadata is client-controlled, and `File.type` is empty or OS-dependent for some extensions (hence the extension fallback). It **cannot catch a wrong codec in an allowed container** (e.g., HEVC or ProRes in `.mp4`/`.mov`, which is common for phone and camera exports), which is exactly the case that wastes a 10GB upload.
+
+### Option B: Option A + zero-dependency browser playability probe before initiate
+- Before calling initiate, the FE loads the local `File` through `URL.createObjectURL` into a detached `<video preload="metadata">`. It accepts on `loadedmetadata` (finite `duration`, `videoWidth > 0`) and rejects on `error` (`MEDIA_ERR_SRC_NOT_SUPPORTED`) or a timeout. The browser reads only the headers of the local file (including a trailing `moov`), so the probe takes milliseconds even for 10GB. The API contract and ffprobe gate are the same as in A.
+- **Pros:** Catches the codec-mismatch case before upload, with no dependency. It tests the property that actually matters (can **a browser** play it), which is TD-06 A's playback contract. FE-only, so no change to the API surface.
+- **Cons:** The verdict depends on the browser. Safari plays HEVC while Chrome may or may not, so the probe can pass a file that ffprobe later rejects. ffprobe stays authoritative, and the codec allowlist must be stricter than "the uploader's browser plays it". An unsupported **audio** track may still pass. Hard to unit-test (needs real media fixtures in E2E).
+
+### Option C: Option A + JS container parser in the browser (e.g., `mediabunny` / `mp4box.js`)
+- The FE parses the file's container headers with a library, extracts the codec identifiers, and checks them against the **same codec allowlist** the worker uses, before initiate.
+- **Pros:** The verdict does not depend on the browser and matches ffprobe's allowlist exactly. Reports precise reasons ("HEVC video is not supported").
+- **Cons:** New FE dependency (tens of KB gzip, lazy-loadable), which goes against the zero-dependency direction of TD-03's recommendation. Each container needs parser support. Still client-side, so not a trust boundary, and ffprobe remains required.
+
+### Option D: Option A + server-side magic-byte sniff of a header sample sent at initiate
+- The FE sends the first ~64KiB of the file with the initiate request (through the BFF). Nest checks the container signature (`ftyp` box for MP4/MOV, EBML `1A45DFA3` for WebM) before creating the draft.
+- **Pros:** The container check runs on the server instead of trusting the declared MIME.
+- **Cons:** It is not a real trust boundary, because the client can send a valid header and then upload different parts. It still misses codec mismatches (and an `ftyp` box says nothing about codecs). It adds a binary payload to initiate and the BFF route. The usual sniffing lib (`file-type`) is ESM-only, the same CJS friction noted for `nanoid` in TD-10.
+
+**Recommendation:** **Option B (declared allowlist at initiate + browser playability probe, ffprobe authoritative)** — A alone leaves the costly case (wrong codec in an MP4/MOV) undetected until after a 10GB transfer, and B closes most of that gap with no dependency, testing the same "browser-playable" property TD-06 A promises. C is the stricter upgrade if browser-dependent verdicts prove noisy, and since it only touches the FE, it needs no API change. D adds payload and complexity without real trust. Proposed parameters for `/plan-build`: container allowlist MP4/MOV/WebM (extension and MIME, with extension fallback when `File.type` is empty). The ffprobe codec allowlist follows TD-06 A (video `h264`, `vp8`, `vp9`, `av1`; audio `aac`, `mp3`, `opus`, `vorbis`; HEVC excluded). Initiate rejects with HTTP 415/422 plus a domain code. Worker rejection sets `processing_status = failed` with a reason code consumed by TD-12. The FE probe has a timeout of a few seconds and falls back to letting ffprobe decide. The failure semantics of the `failed` state are AMB-2's concern, not this TD's.
+
+**Decision:** A (Declared-metadata allowlist at initiate + ffprobe as the authoritative gate)
+
+**Note:** Diverges from the Recommendation (B) by scope, not by merit: the browser playability probe of Option B lives in `next-frontend`, which is out of scope for this backend-only delivery (UI deferred in `/plan-context 03`). Option A is the backend half of B, so the probe can be added later by the frontend slice without changing this contract. The initiate endpoint rejects any declared MIME type outside the allowlist (`video/mp4`, `video/webm`, the browser-playable containers per TD-06 A); ffprobe in the worker remains the authoritative codec check and marks the video `failed` when it is not playable.
+
+---
+
+## TD-15: Storage Bucket Topology for Public Thumbnails and Private Videos
+
+**Scope:** Cross-layer
+
+**Capability:** Transversal — covers: "Serviço de armazenamento de arquivos (vídeos e thumbnails)", "Geração automática de thumbnail a partir de um frame do vídeo"
+
+**Context:** TD-05 C needs **public-read thumbnails with stable, cacheable URLs** and **private video objects reachable only through presigned GETs**. TD-04 A defines a single `STORAGE_BUCKET`, and no TD says how the two access levels coexist. The choice determines the env keys (Joi schema + `compose.yaml` + `.env.example`), the storage bootstrap (bucket creation, access grants, CORS, lifecycle), the thumbnail URL shape built on `STORAGE_PUBLIC_ENDPOINT` that appears in the video DTO, and the host the FE must allow in `next/image` `remotePatterns`. Emulator support matters (TD-01). In SeaweedFS, **bucket-level** anonymous read (`s3.anonymous.set -bucket … -access Read`) is long-standing. **Bucket policies** with `Principal: "*"` were only honored for anonymous requests from the fix merged on 2026-09-26 (PR #11471), after reports that policies were accepted but had no effect (issue #7469), and prefix-scoped `Resource` matching is not explicitly documented. Garage, TD-01's fallback, has **no bucket policies** at all. It only offers bucket-level public read through its website endpoint. On AWS S3, new buckets have Block Public Access enabled, so any public-read setup must explicitly relax it for the public bucket or prefix.
+
+**Options:**
+
+### Option A: Single bucket, prefix-scoped bucket policy (`thumbnails/*` public, `videos/*` private)
+- One `STORAGE_BUCKET`. Bootstrap applies a policy allowing anonymous `s3:GetObject` on `arn:aws:s3:::{bucket}/thumbnails/*` only. URL: `{STORAGE_PUBLIC_ENDPOINT}/{STORAGE_BUCKET}/thumbnails/{shortId}/{version}.jpg`.
+- **Pros:** Keeps TD-04's key set unchanged. One bucket to create, with one CORS config and one lifecycle rule. This is the textbook AWS pattern.
+- **Cons:** The private videos sit one policy line away from exposure: a wrong `Resource` (`/*`) makes every draft public. Depends on SeaweedFS's newest policy path (requires an image at or after the 2026-09 fix, plus a smoke test for prefix matching). **Breaks TD-01's Garage fallback**, which has no bucket policies. AWS Block Public Access must be relaxed on the bucket that holds private videos.
+
+### Option B: Two buckets — private `STORAGE_BUCKET` (videos) + public-read `STORAGE_THUMBNAILS_BUCKET`
+- Videos (and the multipart lifecycle rule plus the upload CORS) live in the private bucket. Thumbnails are written by the worker into a second bucket that has **bucket-level** anonymous read only (no `List`). URL: `{STORAGE_PUBLIC_ENDPOINT}/{STORAGE_THUMBNAILS_BUCKET}/{shortId}/{version}.jpg`.
+- **Pros:** Isolation by construction: no policy mistake can expose videos. It uses the most portable primitive (bucket-level public read): SeaweedFS's long-standing anonymous grant, a whole-bucket policy on AWS, website mode on Garage, so the TD-01 fallback still works. Each bucket's config stays minimal. CORS is only needed on the video bucket, because `<img>`/`next/image` fetches need none.
+- **Cons:** One extra env key and one extra bucket in bootstrap and tests. It extends TD-04's canonical key list, which is recorded as a **Revision** of TD-04 (same option, added parameter), not a reopening. Thumbnail and video lifecycles are cleaned up separately (e.g., deleting a video must delete in both buckets).
+
+### Option C: No public storage — stable app URL that proxies or redirects to a presigned GET
+- The DTO exposes `/api/videos/{shortId}/thumbnail`. A BFF Route Handler calls Nest, which returns a 302 to a short-lived presigned GET (or streams the bytes).
+- **Pros:** Everything stays private, and it works on any S3 backend with no access-policy features.
+- **Cons:** Effectively reverses TD-05 C's "public-read thumbnails" (it is closer to TD-05 A). Every thumbnail in a listing grid costs a BFF + Nest round trip, and the redirect target expires, which undermines the caching TD-05 C was chosen for. Listed because the validation report named it.
+
+**Recommendation:** **Option B (two buckets: private videos, public-read thumbnails)** — it makes "videos are never public" a structural guarantee rather than a correctly written policy. It relies only on bucket-level public read, the one primitive that SeaweedFS (without the 2026-09 policy fix), AWS and Garage all support, so it keeps TD-01's fallback alive. It matches TD-05 C as decided. The price is one env key, recorded as a Revision of TD-04. Proposed parameters for `/plan-build`: new key `STORAGE_THUMBNAILS_BUCKET` (added to the TD-04 list). The DB stores only the thumbnail **object key**, and the API composes the URL at serialization time from `STORAGE_PUBLIC_ENDPOINT` + bucket + key (path-style per `STORAGE_FORCE_PATH_STYLE`), so changing the endpoint needs no data migration. Keys are versioned (`{shortId}/{random-or-hash}.jpg`), so a replaced thumbnail (Phase 04 custom upload) gets a new URL, and objects are written with `Cache-Control: public, max-age=31536000, immutable`. Anonymous access on the thumbnails bucket is `Read` only, with no `List`. The FE adds the public storage host to `next/image` `remotePatterns`.
+
+**Decision:** B (Two buckets — private `STORAGE_BUCKET` for videos + public-read `STORAGE_THUMBNAILS_BUCKET` for thumbnails)
+
+**Note:** Adds `STORAGE_THUMBNAILS_BUCKET` to the TD-04 environment keys (to be recorded as a TD-04 Revision by `/plan-resolve 03`). Chosen because the anonymous-read grant then applies to a whole bucket — the one policy shape SeaweedFS is confirmed to honor — instead of depending on prefix-scoped policies that are unconfirmed in the emulator.
+
+---
+
 ## Decisions Summary
 
 | ID | Scope | Decision | Recommendation | Choice |
 |----|-------|----------|----------------|--------|
-| TD-01 | Backend | Object storage backend (dev/test vs prod) | A — S3 API everywhere, SeaweedFS in dev/test | _[pending]_ |
-| TD-02 | Cross-layer | Large-file upload protocol | A — S3 multipart, presigned parts, browser → storage direct | _[pending]_ |
-| TD-03 | Frontend | Frontend upload client | B — hand-rolled multipart uploader (Uppy headless as fallback) | _[pending]_ |
-| TD-04 | Cross-layer | Storage endpoint topology | A — internal + public endpoint, bucket CORS | _[pending]_ |
-| TD-05 | Cross-layer | Media delivery (streaming, download, thumbnails) | C — hybrid: public thumbnails, presigned video/download | _[pending]_ |
-| TD-06 | Backend | Playback format | A — original file + ffprobe compatibility gate | _[pending]_ |
-| TD-07 | Backend | Background job queue | A — BullMQ + Redis (`@nestjs/bullmq`) | _[pending]_ |
-| TD-08 | Backend | Video worker topology | A — same codebase, separate entrypoint + Compose service | _[pending]_ |
-| TD-09 | Backend | FFmpeg integration and source access | A — direct spawn, HTTP-Range input via presigned URL | _[pending]_ |
-| TD-10 | Cross-layer | Unique short video identifier | A — crypto-random 11-char base64url + unique constraint | _[pending]_ |
-| TD-11 | Cross-layer | Video lifecycle state model | B — `processing_status` + `publication_status` | _[pending]_ |
-| TD-12 | Cross-layer | Processing status propagation | A — polling via BFF | _[pending]_ |
-| TD-13 | Frontend | FE test strategy for browser → storage traffic | A — fake storage origin (Playwright route + MSW) | _[pending]_ |
+| TD-01 | Backend | Object storage backend (dev/test vs prod) | A — S3 API everywhere, SeaweedFS in dev/test | A |
+| TD-02 | Cross-layer | Large-file upload protocol | A — S3 multipart, presigned parts, browser → storage direct | A |
+| TD-03 | Frontend | Frontend upload client | B — hand-rolled multipart uploader (Uppy headless as fallback) | Out of scope (UI deferred) |
+| TD-04 | Cross-layer | Storage endpoint topology | A — internal + public endpoint, bucket CORS | A |
+| TD-05 | Cross-layer | Media delivery (streaming, download, thumbnails) | C — hybrid: public thumbnails, presigned video/download | C |
+| TD-06 | Backend | Playback format | A — original file + ffprobe compatibility gate | A |
+| TD-07 | Backend | Background job queue | A — BullMQ + Redis (`@nestjs/bullmq`) | A |
+| TD-08 | Backend | Video worker topology | A — same codebase, separate entrypoint + Compose service | A |
+| TD-09 | Backend | FFmpeg integration and source access | A — direct spawn, HTTP-Range input via presigned URL | A |
+| TD-10 | Cross-layer | Unique short video identifier | A — crypto-random 11-char base64url + unique constraint | A |
+| TD-11 | Cross-layer | Video lifecycle state model | B — `processing_status` + `publication_status` | B |
+| TD-12 | Cross-layer | Processing status propagation | A — polling via BFF | Out of scope (UI deferred) |
+| TD-13 | Frontend | FE test strategy for browser → storage traffic | A — fake storage origin (Playwright route + MSW) | Out of scope (UI deferred) |
+| TD-14 | Cross-layer | Input format validation before upload | B — declared allowlist at initiate + browser playability probe, ffprobe authoritative | A (browser probe deferred with UI) |
+| TD-15 | Cross-layer | Storage bucket topology (public thumbnails, private videos) | B — two buckets: private videos + public-read thumbnails bucket | B |
 
 ---
 
 ## Notes for downstream pipeline
 
-- **Dependency chain:** TD-01 (S3 semantics) → TD-02 (presigned multipart) → TD-03, TD-04, TD-13. TD-04 → TD-05, TD-09 (internal vs public presign). TD-06 ↔ TD-09 (Option A of both assumes no transcoding). TD-07 → TD-08 (worker hosts the `@Processor`). TD-11 → TD-12 (polling stop condition). TD-10 is independent.
+- **Dependency chain:** TD-01 (S3 semantics) → TD-02 (presigned multipart) → TD-03, TD-04, TD-13. TD-04 → TD-05, TD-09 (internal vs public presign). TD-06 ↔ TD-09 (Option A of both assumes no transcoding). TD-07 → TD-08 (worker hosts the `@Processor`). TD-11 → TD-12 (polling stop condition). TD-10 is independent. TD-06 A → TD-14 (the ffprobe codec allowlist); TD-14 also feeds the initiate contract of TD-02 and the `failed` reason consumed by TD-12. TD-01 + TD-04 + TD-05 C → TD-15; TD-15 B adds `STORAGE_THUMBNAILS_BUCKET` to TD-04's key list, to be recorded as a TD-04 **Revision** (same option).
 - **Testing-guide update:** if TD-01 A is chosen, `testing-guide-nestjs-project/references/external-systems.md` § Object Storage must switch from "local filesystem" to "real S3 emulator (Docker)". If TD-13 A is chosen, `testing-guide-next-frontend/references/external-systems.md` § Object Storage should document the fake storage origin.
 - **Out of scope here (later phases):** player UI and download button (Phase 05); custom thumbnail upload, publish flow, visibility (Phase 04); view counting (Phase 05).
 
@@ -469,3 +542,4 @@ Sources consulted:
 - [`@nestjs/bullmq` API reference (`@Processor`, `WorkerHost`, attempts/backoff)](https://github.com/nestjs/bull) — via Context7
 - `.claude/skills/nestjs-best-practices/rules/micro-use-queues.md`, `.claude/skills/testing-guide-*/references/external-systems.md`
 - `docs/decisions/technical-decisions-next-frontend-config-base.md` (TD-03), `technical-decisions-phase-02-auth*.md`
+- SeaweedFS wiki — [S3 Bucket Policies](https://github.com/seaweedfs/seaweedfs/wiki/S3-Bucket-Policies) and [Simplest S3 Bucket and User Setup (`s3.anonymous.set`)](https://github.com/seaweedfs/seaweedfs/wiki/Simplest-S3-Bucket-and-User-Setup) — via Context7; [PR #11471 — evaluate bucket policy for anonymous requests (merged 2026-09-26)](https://github.com/seaweedfs/seaweedfs/pull/11471); [issue #7469 — bucket policy without effect (v4.0)](https://github.com/seaweedfs/seaweedfs/issues/7469) (TD-15)
