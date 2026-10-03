@@ -14,6 +14,11 @@ const MANAGED_TABLES = [
   'verification_tokens',
 ];
 
+// Enum types created by the migrations. Other suites share this DB and can leave
+// them behind (TypeORM creates them alongside the entity tables), so they must be
+// dropped together with the tables or `CREATE TYPE` fails with "already exists".
+const MANAGED_TYPES = ['verification_tokens_type_enum'];
+
 describe('Database migrations (integration)', () => {
   let dataSource: DataSource;
 
@@ -37,6 +42,11 @@ describe('Database migrations (integration)', () => {
       ),
       dataSource.query(`DROP TABLE IF EXISTS "migrations" CASCADE`),
     ]);
+    await Promise.all(
+      MANAGED_TYPES.map((type) =>
+        dataSource.query(`DROP TYPE IF EXISTS "${type}" CASCADE`),
+      ),
+    );
   });
 
   afterAll(async () => {
