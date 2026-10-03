@@ -89,6 +89,9 @@ _Subprojects in scope:_
 **Decision:** A (S3 Multipart Upload with presigned part URLs — browser → storage direct)
 **Libraries:** @aws-sdk/client-s3, @aws-sdk/s3-request-presigner
 
+**Revisions:**
+- 2026-10-03 — Initiate payload fixed as `fileName`, `mimeType`, `size` (no title field). The draft row is created at initiate with `title` = file name without extension (truncated to 100 chars), `description` null, `processing_status` = `uploading`, `publication_status` = `draft`, `short_id` (TD-10), `original_object_key`, `mime_type`, `size_bytes`, `upload_id`; owner is the authenticated user's channel (`channel_id` FK → `channels`, one channel per user per phase-02-auth/TD-10). Rationale: AMB-3 resolution — title/description editing belongs to Phase 04.
+
 ---
 
 ## TD-03: Frontend Upload Client
@@ -191,6 +194,9 @@ _Subprojects in scope:_
 
 **Decision:** C (Hybrid — thumbnails public-read, video playback and download via presigned GET)
 **Libraries:** @aws-sdk/s3-request-presigner
+
+**Revisions:**
+- 2026-10-03 — Phase 03 authorization for presigned playback/download: URLs are issued only to the authenticated owner of the video's channel; any other caller (authenticated or anonymous) gets 404 without revealing existence. Thumbnails stay public-read by design (TD-15). "O usuário" in the download capability means the owner. Third-party access depends on publication/visibility (Phase 04). Rationale: AMB-1 resolution — every Phase 03 video is a draft.
 
 ---
 
@@ -383,6 +389,9 @@ _Subprojects in scope:_
 **Recommendation:** **Option B (orthogonal `processing_status` + `publication_status`)** — the plan itself separates "processing" (Phase 03) from "draft → publication" (Phase 04). Two fields with clear owners let Phase 04 extend without redefining Phase 03's states, and give the FE a stable contract. Timestamps such as `processed_at` can still be added for audit.
 
 **Decision:** B (Two orthogonal fields — `processing_status` + `publication_status`)
+
+**Revisions:**
+- 2026-10-03 — `processing_status` values: `uploading | processing | ready | failed`. Transitions: `uploading → processing` on multipart complete (job enqueued), `processing → ready` (ffprobe ok, metadata and thumbnail stored), `processing → failed`. Nullable `failure_reason` code: `UNSUPPORTED_FORMAT` (ffprobe rejects container/codec), `PROCESSING_FAILED` (job exhausts BullMQ retries — 3 attempts, exponential backoff), `SOURCE_MISSING` (object absent when processing). The owner sees `processing_status` + `failure_reason` on the video GET. A `failed` video's object is kept (diagnosis; cleanup is a future task). Abandoned uploads stay `uploading`; bucket lifecycle aborts incomplete multipart after 24h; orphan-draft cleanup and the reconciliation sweep are follow-ups outside Phase 03. `publication_status` is `draft` for every Phase 03 video. Worker-filled fields: `duration_seconds`, `width`, `height`, `video_codec`, `audio_codec`, `thumbnail_object_key`, `processed_at`. Rationale: AMB-2/AMB-3 resolution.
 
 ---
 
