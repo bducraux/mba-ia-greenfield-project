@@ -37,47 +37,37 @@ How each external system is handled in tests. These strategies were confirmed wi
 
 ---
 
-## Object Storage — Local Filesystem
+## Object Storage — Real S3 API (SeaweedFS in Docker)
 
-**Strategy:** Local filesystem storage in development and tests. S3 in production.
+**Strategy:** The S3 API everywhere. Development and tests run against the SeaweedFS S3 gateway in `compose.yaml`; production points the same client at any S3-compatible provider. There is no local-filesystem adapter: multipart uploads, presigned URLs, HTTP Range reads and bucket policies are S3 semantics a filesystem cannot reproduce (see `docs/decisions/technical-decisions-phase-03-upload-processing.md`, TD-01 and TD-02).
 
 **Approach:**
-- The storage layer should use an abstraction (e.g., `StorageService` interface) that allows switching between local filesystem and S3
-- In tests, use the local filesystem adapter — no mocking needed
-- Use a temporary directory for test uploads: `os.tmpdir()` or a dedicated `test-uploads/` directory
-- Clean up test files in `afterAll`
-
-**Setup pattern:**
-```typescript
-// In test module setup
-{
-  provide: 'STORAGE_CONFIG',
-  useValue: {
-    driver: 'local',
-    basePath: path.join(os.tmpdir(), 'streamtube-test-uploads'),
-  },
-}
-```
+- Services talk to storage through the AWS SDK v3 S3 client, configured from `STORAGE_*` env vars (Compose service name as host, path-style addressing)
+- Integration and e2e tests use the real `storage` service — no mocking of the S3 client outside unit tests
+- Use a unique key prefix per test run (e.g., `test/<uuid>/`) and delete the objects it created in `afterAll`
+- Unit tests (`*.spec.ts`) mock the storage service class, never the network
 
 **Integration test:**
 ```typescript
-import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
-
 describe('StorageService (integration)', () => {
-  const testDir = path.join(os.tmpdir(), 'streamtube-test-uploads');
+  const prefix = `test/${randomUUID()}/`;
 
-  afterAll(() => {
-    fs.rmSync(testDir, { recursive: true, force: true });
+  afterAll(async () => {
+    await storageService.deletePrefix(prefix);
   });
 
-  it('should upload and retrieve a file', async () => {
-    const buffer = Buffer.from('test content');
-    const key = await storageService.upload(buffer, 'test.txt');
+  it('should complete a multipart upload through presigned part URLs', async () => {
+    const key = `${prefix}video.mp4`;
+    const { uploadId } = await storageService.createMultipartUpload(key, 'video/mp4');
+    const [url] = await storageService.presignUploadParts(key, uploadId, 1);
 
-    const retrieved = await storageService.get(key);
-    expect(retrieved.toString()).toBe('test content');
+    const res = await fetch(url, { method: 'PUT', body: Buffer.from('content') });
+    await storageService.completeMultipartUpload(key, uploadId, [
+      { PartNumber: 1, ETag: res.headers.get('etag')! },
+    ]);
+
+    const head = await storageService.headObject(key);
+    expect(head.ContentLength).toBe(7);
   });
 });
 ```
@@ -86,10 +76,10 @@ describe('StorageService (integration)', () => {
 
 ## Message Queue — Real (Docker)
 
-**Strategy:** Real message broker in Docker. The specific technology is TBD per the architecture diagram (likely BullMQ with Redis or RabbitMQ).
+**Strategy:** Real message broker in Docker — BullMQ on the `redis` Compose service (Phase 03, TD-07).
 
-**When the queue technology is chosen, configure:**
-- A queue broker service in `compose.yaml` (e.g., Redis for BullMQ, RabbitMQ for AMQP)
+**Configuration:**
+- The `redis` service in `compose.yaml`; `REDIS_HOST` is the Compose service name
 - Test isolation: use dedicated test queues or clean queues between tests
 - For publisher tests: assert the job is enqueued with correct data
 - For consumer tests: submit a job and assert the processing outcome
