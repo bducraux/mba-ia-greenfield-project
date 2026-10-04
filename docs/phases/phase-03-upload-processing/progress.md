@@ -1,7 +1,7 @@
 # phase-03-upload-processing — Progress
 
 **Status:** in_progress
-**SIs:** 2/15 completed
+**SIs:** 3/15 completed
 
 ### SI-03.1 — Infra: Redis + configuração raiz da fila
 - **Status:** completed
@@ -26,9 +26,16 @@
   - SeaweedFS limitation (emulator, not in TD-16): bucket-scoped `Write:<bucket>` on the app identity also authorizes `PutBucketCors` (verified — a probe overwrote the CORS, restored by re-running storage-init). On SeaweedFS there is no finer-grained action than `Write` to separate object writes from bucket-config writes; prod contract (SI-03.15) should still scope the app's IAM to object-level actions only.
 
 ### SI-03.3 — StorageService com clientes S3 interno e público
-- **Status:** pending
-- **Tests:** —
-- **Observations:** none
+- **Status:** completed
+- **Tests:** 33 passing (storage.service.integration-spec 14, env.validation.integration-spec 18, storage.module.spec 1); tsc + eslint of touched files clean
+- **Observations:**
+  - `@aws-sdk/client-s3` and `@aws-sdk/s3-request-presigner` pinned exactly at `3.1146.0` (same v3 release, latest at install; CJS build present).
+  - Bucket selection is a typed logical name, `StorageBucket = 'videos' | 'thumbnails'`, on `headObject`/`deleteObject`/`putObject`/`buildPublicObjectUrl(bucket, key)`; multipart ops and `presignGetObject` always target the private videos bucket (the only bucket they apply to). Callers never handle raw bucket names.
+  - Both `S3Client`s set `requestChecksumCalculation`/`responseChecksumValidation: 'WHEN_REQUIRED'` so presigned part URLs don't carry SDK flexible-checksum parameters a browser PUT cannot satisfy (defensive; SDK default since 3.731.0 is `WHEN_SUPPORTED`). Not separately proven necessary against SeaweedFS.
+  - Typed errors live in `src/storage/storage.errors.ts` (`StorageObjectNotFoundError`, `StorageUploadNotFoundError`, `StorageInvalidPartsError`, base `StorageError`), mapped by SDK error `name` from `storage.constants.ts`. `listParts`, `abortMultipartUpload` and `deleteObject` are also mapped (not only head/complete). SeaweedFS returns `InvalidPart` for a wrong ETag — verified by test.
+  - New test helper `src/test/storage.ts` (`storageHttpRequest`): browser-facing URLs are signed for `STORAGE_PUBLIC_ENDPOINT` (`localhost:8333`), unreachable from inside the `nestjs-api` container, so the helper connects to `STORAGE_ENDPOINT` while preserving the signed `Host` header. Reusable by later integration/e2e tests that exercise presigned URLs.
+  - `STORAGE_ADMIN_*` keys are intentionally NOT in the API Joi schema (used only by storage-init, per TD-16).
+  - Integration spec uses a unique per-run key prefix and cleans up created objects / open uploads in `afterAll`.
 
 ### SI-03.4 — Entidade Video + migration da tabela videos + gerador de short ID
 - **Status:** pending

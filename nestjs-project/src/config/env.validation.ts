@@ -23,4 +23,13 @@ export const envValidationSchema = Joi.object({
   SWAGGER_ENABLED: Joi.string().valid('true', 'false').default('false'),
   REDIS_HOST: Joi.string().required(),
   REDIS_PORT: Joi.number().port().default(6379),
+  STORAGE_ENDPOINT: Joi.string().uri().required(),
+  STORAGE_PUBLIC_ENDPOINT: Joi.string().uri().required(),
+  STORAGE_REGION: Joi.string().required(),
+  STORAGE_ACCESS_KEY: Joi.string().required(),
+  STORAGE_SECRET_KEY: Joi.string().required(),
+  STORAGE_BUCKET: Joi.string().required(),
+  STORAGE_THUMBNAILS_BUCKET: Joi.string().required(),
+  STORAGE_FORCE_PATH_STYLE: Joi.boolean().required(),
+  STORAGE_CORS_ORIGIN: Joi.string().uri().required(),
 });
