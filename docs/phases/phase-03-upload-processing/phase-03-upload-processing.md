@@ -266,7 +266,7 @@ Entregar o serviço de armazenamento de arquivos (vídeos e thumbnails) e o serv
 ### SI-03.9 — VideosController: endpoints de upload
 
 **Route:** POST /videos, POST /videos/:shortId/upload/part-urls, GET /videos/:shortId/upload/parts, POST /videos/:shortId/upload/complete
-**Test Specs:** _pending /plan-test-specs_
+**Test Specs:** see `nestjs-project/specs/videos-upload.plan.md`
 **Authorization:** Authenticated (dono para as rotas com `:shortId`) — ver `### Authorization Matrix`
 
 **Description:** Expõe o protocolo de upload em HTTP com DTOs snake_case, documentação OpenAPI explícita e isenção do rate limit de auth (`phase-03-upload-processing/TD-02`; `openapi-docs-nestjs/TD-01`).
@@ -299,7 +299,7 @@ Entregar o serviço de armazenamento de arquivos (vídeos e thumbnails) e o serv
 ### SI-03.10 — VideosController: consulta do vídeo e URLs de mídia
 
 **Route:** GET /videos/:shortId, GET /videos/:shortId/playback-url, GET /videos/:shortId/download-url
-**Test Specs:** _pending /plan-test-specs_
+**Test Specs:** see `nestjs-project/specs/videos-media.plan.md`
 **Authorization:** Owner — ver `### Authorization Matrix`
 
 **Description:** Expõe o status do vídeo (polling do processamento) e as URLs de streaming e download para o dono (`phase-03-upload-processing/TD-05`, `TD-12`).
