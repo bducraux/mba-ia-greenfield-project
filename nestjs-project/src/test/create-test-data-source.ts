@@ -28,6 +28,14 @@ export function createTestDataSource(
 }
 
 export async function cleanAllTables(dataSource: DataSource): Promise<void> {
+  // `videos` references `channels`, so it must be emptied first. Suites whose
+  // DataSource does not include `Video` may run against a DB without the table.
+  const [{ videos }] = await dataSource.query<{ videos: string | null }[]>(
+    `SELECT to_regclass('public.videos') AS videos`,
+  );
+  if (videos !== null) {
+    await dataSource.query('DELETE FROM "videos"');
+  }
   await dataSource.query('DELETE FROM "refresh_tokens"');
   await dataSource.query('DELETE FROM "verification_tokens"');
   await dataSource.query('DELETE FROM "channels"');

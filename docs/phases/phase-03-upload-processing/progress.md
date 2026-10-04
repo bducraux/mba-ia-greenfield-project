@@ -1,7 +1,7 @@
 # phase-03-upload-processing — Progress
 
 **Status:** in_progress
-**SIs:** 3/15 completed
+**SIs:** 4/15 completed
 
 ### SI-03.1 — Infra: Redis + configuração raiz da fila
 - **Status:** completed
@@ -38,9 +38,15 @@
   - Integration spec uses a unique per-run key prefix and cleans up created objects / open uploads in `afterAll`.
 
 ### SI-03.4 — Entidade Video + migration da tabela videos + gerador de short ID
-- **Status:** pending
-- **Tests:** —
-- **Observations:** none
+- **Status:** completed
+- **Tests:** 22 passing (short-id.util.spec, video.entity.integration-spec, migrations.integration-spec); channel/user entity integration specs re-run green (10) after the shared cleanup helper change; tsc + eslint of touched files clean
+- **Observations:**
+  - The migration was produced with `npm run migration:generate` (not `migration:create` + hand-written SQL), per `.claude/rules/typeorm-migrations.md` "never write migration SQL by hand". The output matches `### Data Model`; `migration:generate --check` reports no drift between the entity and the migrations.
+  - The CHECK constraints are declared on the entity with named `@Check` decorators (`CHK_videos_processing_status`, `CHK_videos_publication_status`, `CHK_videos_failure_reason`). That way suites using `synchronize: true` enforce them too, and the generated migration uses stable names. Phase 04 widens `CHK_videos_publication_status` by name.
+  - The `Video → Channel` relation is unidirectional as TD-11 / the SI require. This goes against `.claude/rules/nestjs-entities.md` ("always define both sides"), so the plan took precedence and `Channel` was not changed.
+  - Shared helper `cleanAllTables` (`src/test/create-test-data-source.ts`) now runs `DELETE FROM "videos"` first, because the FK to `channels` would block `DELETE FROM channels`. The delete is guarded with `to_regclass`, so suites whose DataSource does not include `Video` still work on a DB that has no `videos` table yet.
+  - The status/reason literal sets are also exported as `as const` arrays (`PROCESSING_STATUSES`, `PUBLICATION_STATUSES`, `FAILURE_REASONS`) next to the types in `video.types.ts`, so later DTO/OpenAPI enums can reuse them.
+  - CLI ACs were checked against the dev DB: `migration:revert` removed only `videos`, and `migration:run` recreated it.
 
 ### SI-03.5 — Producer da fila video-processing
 - **Status:** pending
