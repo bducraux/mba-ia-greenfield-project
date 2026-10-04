@@ -48,3 +48,73 @@ export class TokenReuseDetectedException extends DomainException {
     );
   }
 }
+
+export class UnsupportedVideoFormatException extends DomainException {
+  constructor() {
+    super(
+      'UNSUPPORTED_VIDEO_FORMAT',
+      415,
+      'Only MP4 (.mp4, .m4v) and WebM (.webm) videos are supported',
+    );
+  }
+}
+
+export class VideoTooLargeException extends DomainException {
+  constructor() {
+    super('VIDEO_TOO_LARGE', 422, 'Video exceeds the maximum size of 10 GiB');
+  }
+}
+
+export class VideoSizeMismatchException extends DomainException {
+  constructor() {
+    super(
+      'VIDEO_SIZE_MISMATCH',
+      422,
+      'Uploaded video size does not match the declared size',
+    );
+  }
+}
+
+export class VideoNotFoundException extends DomainException {
+  constructor() {
+    super('VIDEO_NOT_FOUND', 404, 'Video not found');
+  }
+}
+
+export class UploadNotInProgressException extends DomainException {
+  constructor() {
+    super('UPLOAD_NOT_IN_PROGRESS', 409, 'Video upload is not in progress');
+  }
+}
+
+export class InvalidUploadPartsException extends DomainException {
+  constructor() {
+    super('INVALID_UPLOAD_PARTS', 422, 'Upload parts are invalid');
+  }
+}
+
+export class UploadSessionExpiredException extends DomainException {
+  constructor() {
+    super(
+      'UPLOAD_SESSION_EXPIRED',
+      410,
+      'Upload session has expired — start a new upload',
+    );
+  }
+}
+
+export class ProcessingQueueUnavailableException extends DomainException {
+  constructor() {
+    super(
+      'PROCESSING_QUEUE_UNAVAILABLE',
+      503,
+      'Video processing is temporarily unavailable — retry later',
+    );
+  }
+}
+
+export class VideoNotReadyException extends DomainException {
+  constructor() {
+    super('VIDEO_NOT_READY', 409, 'Video is not ready');
+  }
+}

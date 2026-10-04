@@ -12,6 +12,36 @@ services:
         condition: service_healthy
       mailpit:
         condition: service_started
+      redis:
+        condition: service_healthy
+      storage-init:
+        condition: service_completed_successfully
+
+  video-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    # node_modules lives in the shared bind mount and is installed through
+    # nestjs-api; wait for npm's hidden lockfile (written when an install
+    # finishes) instead of failing, so a fresh checkout does not crash-loop.
+    command:
+      - sh
+      - -c
+      - |
+        until [ -f node_modules/.package-lock.json ]; do
+          echo "video-worker: waiting for node_modules (run: docker compose exec nestjs-api npm install)"
+          sleep 5
+        done
+        exec npm run start:worker:dev
+    volumes:
+      - .:/home/node/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      storage-init:
+        condition: service_completed_successfully
 
   db:
     image: postgres:17
@@ -33,4 +63,43 @@ services:
       - "1025:1025"
       - "8025:8025"
 
+  redis:
+    image: redis:7.4-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.48
+    entrypoint: ["/docker/seaweedfs/entrypoint.sh"]
+    ports:
+      - "8333:8333"
+    volumes:
+      - ./docker/seaweedfs:/docker/seaweedfs:ro
+    environment:
+      - STORAGE_ADMIN_ACCESS_KEY=${STORAGE_ADMIN_ACCESS_KEY}
+      - STORAGE_ADMIN_SECRET_KEY=${STORAGE_ADMIN_SECRET_KEY}
+      - STORAGE_ACCESS_KEY=${STORAGE_ACCESS_KEY}
+      - STORAGE_SECRET_KEY=${STORAGE_SECRET_KEY}
+      - STORAGE_BUCKET=${STORAGE_BUCKET}
+      - STORAGE_THUMBNAILS_BUCKET=${STORAGE_THUMBNAILS_BUCKET}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8333/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  storage-init:
+    image: amazon/aws-cli:2.37.9
+    entrypoint: ["/bin/sh", "/docker/storage-init/init.sh"]
+    volumes:
+      - ./docker/storage-init:/docker/storage-init:ro
+    env_file: .env
+    depends_on:
+      seaweedfs:
+        condition: service_healthy
+    restart: "no"

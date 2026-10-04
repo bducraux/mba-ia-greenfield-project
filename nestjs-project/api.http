@@ -118,3 +118,77 @@ Content-Type: {{contentType}}
   "token": "{{resetToken}}",
   "new_password": "new-password123"
 }
+
+
+###
+# ─────────────────────────────────────────────
+# UPLOAD DE VÍDEO (multipart direto ao storage)
+# ─────────────────────────────────────────────
+# Fluxo: 10 → 11 → PUT de cada part na URL presignada → 12 (opcional, retomada) → 13
+# Requer login (4) — os endpoints de vídeo exigem access_token.
+
+@shortId = {{initiateUpload.response.body.$.video.short_id}}
+
+### 10. Iniciar upload — cria o rascunho (uploading) e devolve part_size / part_count
+# @name initiateUpload
+POST {{baseUrl}}/videos
+Authorization: Bearer {{accessToken}}
+Content-Type: {{contentType}}
+
+{
+  "file_name": "clip.mp4",
+  "mime_type": "video/mp4",
+  "size": 1048576
+}
+
+
+### 11. URLs presignadas das parts (válidas por 1 h; pode ser chamado de novo para re-assinar)
+# Envie os bytes de cada part com PUT na URL retornada e guarde o header ETag da resposta.
+POST {{baseUrl}}/videos/{{shortId}}/upload/part-urls
+Authorization: Bearer {{accessToken}}
+Content-Type: {{contentType}}
+
+{
+  "part_numbers": [1]
+}
+
+
+### 12. Parts já recebidas pelo storage (retomada de upload)
+GET {{baseUrl}}/videos/{{shortId}}/upload/parts
+Authorization: Bearer {{accessToken}}
+
+
+### 13. Concluir upload — monta o arquivo, enfileira o processamento e move para processing
+# Cole o ETag de cada part; ele vem entre aspas, que precisam ser escapadas no JSON
+# (ex.: "etag": "\"9b2cf535f27731c974343645a3985328\"")
+POST {{baseUrl}}/videos/{{shortId}}/upload/complete
+Authorization: Bearer {{accessToken}}
+Content-Type: {{contentType}}
+
+{
+  "parts": [
+    { "part_number": 1, "etag": "<ETag do PUT da part 1>" }
+  ]
+}
+
+
+###
+# ─────────────────────────────────────────────
+# CONSULTA DO VÍDEO E URLs DE MÍDIA (dono)
+# ─────────────────────────────────────────────
+# Usa o @shortId capturado em 10. Playback e download exigem vídeo `ready`
+# (enquanto não estiver, respondem 409 VIDEO_NOT_READY).
+
+### 14. Consultar o vídeo — polling do processamento (processing_status, failure_reason, thumbnail_url)
+GET {{baseUrl}}/videos/{{shortId}}
+Authorization: Bearer {{accessToken}}
+
+
+### 15. URL de streaming (presignada, válida por 4 h; aceita Range no <video src>)
+GET {{baseUrl}}/videos/{{shortId}}/playback-url
+Authorization: Bearer {{accessToken}}
+
+
+### 16. URL de download (presignada, válida por 1 h; força Content-Disposition: attachment)
+GET {{baseUrl}}/videos/{{shortId}}/download-url
+Authorization: Bearer {{accessToken}}
