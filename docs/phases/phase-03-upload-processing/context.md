@@ -3,7 +3,7 @@ kind: phase
 name: phase-03-upload-processing
 sources_mtime:
   docs/project-plan.md: "2026-10-03T17:53:36-03:00"
-  docs/decisions/technical-decisions-phase-03-upload-processing.md: "2026-10-03T20:28:39-03:00"
+  docs/decisions/technical-decisions-phase-03-upload-processing.md: "2026-10-03T20:32:34-03:00"
   docs/phases/phase-03-upload-processing/library-refs.md: "2026-10-03T20:31:49-03:00"
   docs/decisions/technical-decisions-openapi-docs-nestjs.md: "2026-10-03T18:04:32-03:00"
   docs/decisions/technical-decisions-next-frontend-config-base.md: "2026-10-03T18:04:32-03:00"
@@ -34,7 +34,7 @@ sources_mtime:
 
 **Out of scope:** _Not specified._
 **Deliverables:** upload de até 10GB funcional, processamento automático do vídeo, streaming funcionando, URLs únicas geradas.
-**Affected subprojects:** _None mentioned. The phase text names no subproject paths._
+**Affected subprojects:** _None mentioned explicitly in the phase body._
 **Deferred subprojects:** _None._
 **Sequencing notes:** "> Depende de: Fase 01, Fase 02"
 
@@ -48,22 +48,25 @@ sources_mtime:
 | Ref | Source | Scope | Topic | Status | Decision | Libraries |
 |-----|--------|-------|-------|--------|----------|-----------|
 | phase-03-upload-processing/TD-01 | phase | Backend | Object Storage Backend (dev/test vs production) | decided | A (S3 API everywhere, SeaweedFS in dev/test) | @aws-sdk/client-s3 |
-| phase-03-upload-processing/TD-02 | phase | Cross-layer | Large-File Upload Protocol (10GB, resumable) | decided | A (S3 Multipart Upload, presigned part URLs, browser → storage) | @aws-sdk/client-s3, @aws-sdk/s3-request-presigner |
-| phase-03-upload-processing/TD-03 | phase | Frontend | Frontend Upload Client | decided | Out of scope (UI deferred) | — |
-| phase-03-upload-processing/TD-04 | phase | Cross-layer | Storage Endpoint Topology (internal vs browser-facing URLs) | decided | A (two endpoints: `STORAGE_ENDPOINT` + `STORAGE_PUBLIC_ENDPOINT`, bucket CORS) | @aws-sdk/client-s3, @aws-sdk/s3-request-presigner |
-|     └─ Last revision: 2026-10-03 — Canonical key list extended with `STORAGE_THUMBNAILS_BUCKET` (public-read thumb… | | | | | | |
-| phase-03-upload-processing/TD-05 | phase | Cross-layer | Media Delivery Strategy (streaming, download, thumbnails) | decided | C (hybrid: public-read thumbnails, presigned GET for playback and download) | @aws-sdk/s3-request-presigner |
-| phase-03-upload-processing/TD-06 | phase | Backend | Playback Format: original vs normalized rendition vs HLS | decided | A (serve the original, gated by ffprobe compatibility check) | — |
+| phase-03-upload-processing/TD-02 | phase | Cross-layer | Large-File Upload Protocol (10GB, resumable) | decided | A (S3 Multipart + presigned part URLs, browser → storage) | @aws-sdk/client-s3, @aws-sdk/s3-request-presigner |
+|     └─ Last revision: 2026-10-03 — Initiate payload fixed as `fileName`, `mimeType`, `size` (no title field)… | | | | | | |
+| phase-03-upload-processing/TD-03 | phase | Frontend | Frontend Upload Client | decided | Out of scope (backend only, UI deferred to Phase 03 FE slice) | — |
+| phase-03-upload-processing/TD-04 | phase | Cross-layer | Storage Endpoint Topology (internal vs browser-facing URLs) | decided | A (`STORAGE_ENDPOINT` + `STORAGE_PUBLIC_ENDPOINT`, bucket CORS) | @aws-sdk/client-s3, @aws-sdk/s3-request-presigner |
+|     └─ Last revision: 2026-10-03 — Canonical key list extended with `STORAGE_THUMBNAILS_BUCKET` (public-read thu… | | | | | | |
+| phase-03-upload-processing/TD-05 | phase | Cross-layer | Media Delivery Strategy (streaming, download, thumbnails) | decided | C (Hybrid: public-read thumbnails, presigned GET for video) | @aws-sdk/s3-request-presigner |
+|     └─ Last revision: 2026-10-03 — Phase 03 authorization for presigned playback/download: URLs are issued only to… | | | | | | |
+| phase-03-upload-processing/TD-06 | phase | Backend | Playback Format: original vs normalized rendition vs HLS | decided | A (Serve original upload, gated by ffprobe compatibility) | — |
 | phase-03-upload-processing/TD-07 | phase | Backend | Background Job Queue Technology | decided | A (BullMQ + Redis via `@nestjs/bullmq`) | @nestjs/bullmq, bullmq |
-| phase-03-upload-processing/TD-08 | phase | Backend | Video Worker Topology | decided | A (same codebase, separate entrypoint + `video-worker` Compose service) | — |
-| phase-03-upload-processing/TD-09 | phase | Backend | FFmpeg Integration and Source-File Access | decided | A (spawn `ffprobe`/`ffmpeg` directly, input = presigned internal GET over HTTP Range) | — |
-| phase-03-upload-processing/TD-10 | phase | Cross-layer | Unique Short Video Identifier (public URL) | decided | A (random 11-char base64url via `node:crypto`, unique index, retry on conflict) | — |
-| phase-03-upload-processing/TD-11 | phase | Cross-layer | Video Lifecycle State Model | decided | B (two orthogonal fields: `processing_status` + `publication_status`) | — |
-| phase-03-upload-processing/TD-12 | phase | Cross-layer | Processing Status Propagation to the Frontend | decided | Out of scope (UI deferred) | — |
-| phase-03-upload-processing/TD-13 | phase | Frontend | Frontend Test Strategy for Browser → Storage Traffic | decided | Out of scope (UI deferred) | — |
-| phase-03-upload-processing/TD-14 | phase | Cross-layer | Input Format Validation Before Upload | decided | A (declared-metadata allowlist at initiate + ffprobe as the authoritative gate) | — |
-|     └─ Last revision: 2026-10-03 — MOV removed from the container allowlist. Final allowlist: `video/mp4` (extensi… | | | | | | |
-| phase-03-upload-processing/TD-15 | phase | Cross-layer | Storage Bucket Topology (public thumbnails, private videos) | decided | B (two buckets: private `STORAGE_BUCKET` + public-read `STORAGE_THUMBNAILS_BUCKET`) | @aws-sdk/client-s3 |
+| phase-03-upload-processing/TD-08 | phase | Backend | Video Worker Topology | decided | A (Same codebase, separate entrypoint + `video-worker` service) | — |
+| phase-03-upload-processing/TD-09 | phase | Backend | FFmpeg Integration and Source-File Access | decided | A (Spawn ffprobe/ffmpeg, input = presigned internal GET URL) | — |
+| phase-03-upload-processing/TD-10 | phase | Cross-layer | Unique Short Video Identifier (public URL) | decided | A (Random 11-char base64url + unique index + retry) | — |
+| phase-03-upload-processing/TD-11 | phase | Cross-layer | Video Lifecycle State Model | decided | B (`processing_status` + `publication_status`) | — |
+|     └─ Last revision: 2026-10-03 — `processing_status` values: `uploading \| processing \| ready \| failed`. Transitio… | | | | | | |
+| phase-03-upload-processing/TD-12 | phase | Cross-layer | Processing Status Propagation to the Frontend | decided | Out of scope (backend only, UI deferred to Phase 03 FE slice) | — |
+| phase-03-upload-processing/TD-13 | phase | Frontend | Frontend Test Strategy for Browser → Storage Traffic | decided | Out of scope (backend only, UI deferred to Phase 03 FE slice) | — |
+| phase-03-upload-processing/TD-14 | phase | Cross-layer | Input Format Validation Before Upload | decided | A (Declared-metadata allowlist at initiate + ffprobe gate) | — |
+|     └─ Last revision: 2026-10-03 — MOV removed from the container allowlist. Final allowlist: `video/mp4` (extensio… | | | | | | |
+| phase-03-upload-processing/TD-15 | phase | Cross-layer | Storage Bucket Topology: Public Thumbnails / Private Videos | decided | B (Private `STORAGE_BUCKET` + public-read `STORAGE_THUMBNAILS_BUCKET`) | @aws-sdk/client-s3 |
 
 _Source files:_
 
@@ -95,6 +98,9 @@ _Source files:_
 **Recommendation:** it is the only option where video bytes never touch the application tier. That is the literal requirement, and it is the mechanism `config-base/TD-03` already reserved for media. Proposed parameters for `/plan-build`: `partSize` = 64MiB, returned by the API (single source; the client never hard-codes it). Max file size = 10 GiB, enforced at initiate from the declared `size` and re-checked at complete via `HeadObject`. Presigned part URL TTL ≈ 1h, re-signable on demand. Bucket lifecycle rule aborts incomplete multipart uploads after 24h. Depends on TD-01 (S3 semantics) and TD-04 (public endpoint + CORS).
 **Libraries:** @aws-sdk/client-s3, @aws-sdk/s3-request-presigner
 
+**Revisions:**
+- 2026-10-03 — Initiate payload fixed as `fileName`, `mimeType`, `size` (no title field). The draft row is created at initiate with `title` = file name without extension (truncated to 100 chars), `description` null, `processing_status` = `uploading`, `publication_status` = `draft`, `short_id` (TD-10), `original_object_key`, `mime_type`, `size_bytes`, `upload_id`; owner is the authenticated user's channel (`channel_id` FK → `channels`, one channel per user per phase-02-auth/TD-10). Rationale: AMB-3 resolution — title/description editing belongs to Phase 04.
+
 ### phase-03-upload-processing/TD-03
 
 **Recommendation:** **Option B (hand-rolled uploader)**, with **Option A as the fallback** if the team prefers a library. TD-02 makes the API the owner of initiate/complete, because that is where the draft is created and processing is enqueued. Uppy's current major moved toward the client performing S3 calls itself, which fights that ownership. The resume edge case that matters most (the user must re-pick the file after a reload) is a browser constraint that Uppy does not remove either. The hand-rolled module is small, has no dependencies, and its retry and re-sign behavior can be pinned down in Vitest.
@@ -112,6 +118,9 @@ _Source files:_
 
 **Recommendation:** thumbnails are displayed in volume across later phases and need stable URLs for caching, while video objects need signing-time control for drafts now and visibility later (Phase 04/05). Storage serves Range and `Content-Disposition` natively, so nothing heavy passes through Node. `<video src>` receives the presigned URL; MP4 Range playback works natively in browsers.
 **Libraries:** @aws-sdk/s3-request-presigner
+
+**Revisions:**
+- 2026-10-03 — Phase 03 authorization for presigned playback/download: URLs are issued only to the authenticated owner of the video's channel; any other caller (authenticated or anonymous) gets 404 without revealing existence. Thumbnails stay public-read by design (TD-15). "O usuário" in the download capability means the owner. Third-party access depends on publication/visibility (Phase 04). Rationale: AMB-1 resolution — every Phase 03 video is a draft.
 
 ### phase-03-upload-processing/TD-06
 
@@ -142,6 +151,9 @@ _Source files:_
 
 **Recommendation:** the plan itself separates "processing" (Phase 03) from "draft → publication" (Phase 04). Two fields with clear owners let Phase 04 extend without redefining Phase 03's states, and give the FE a stable contract. Timestamps such as `processed_at` can still be added for audit.
 **Libraries:** —
+
+**Revisions:**
+- 2026-10-03 — `processing_status` values: `uploading | processing | ready | failed`. Transitions: `uploading → processing` on multipart complete (job enqueued), `processing → ready` (ffprobe ok, metadata and thumbnail stored), `processing → failed`. Nullable `failure_reason` code: `UNSUPPORTED_FORMAT` (ffprobe rejects container/codec), `PROCESSING_FAILED` (job exhausts BullMQ retries — 3 attempts, exponential backoff), `SOURCE_MISSING` (object absent when processing). The owner sees `processing_status` + `failure_reason` on the video GET. A `failed` video's object is kept (diagnosis; cleanup is a future task). Abandoned uploads stay `uploading`; bucket lifecycle aborts incomplete multipart after 24h; orphan-draft cleanup and the reconciliation sweep are follow-ups outside Phase 03. `publication_status` is `draft` for every Phase 03 video. Worker-filled fields: `duration_seconds`, `width`, `height`, `video_codec`, `audio_codec`, `thumbnail_object_key`, `processed_at`. Rationale: AMB-2/AMB-3 resolution.
 
 ### phase-03-upload-processing/TD-12
 
@@ -327,12 +339,12 @@ _Source files:_
 
 ## Inherited Conventions
 
-- Backend config uses `@nestjs/config` with namespaced `registerAs(name, () => ({...}))` factories — one file per domain in... _(from phase 01)_
-- Env variables are validated by a Joi schema in `src/config/env.validation.ts`, passed to `ConfigModule.forRoot({ validationSchema`... _(from phase 01)_
-- Config is injected into modules via `ConfigType<typeof xxxConfig>` and `@Inject(xxxConfig.KEY)`; the same factory is importable... _(from phase 01)_
-- `data-source.ts` loads `.env` via `import 'dotenv/config'` at the top, then imports `databaseConfig` and calls it as a plain... _(from phase 01)_
-- Database connection parameters (host, port, etc.) are sourced from a single `databaseConfig` factory — never duplicated between... _(from phase 01)_
-- `TypeOrmModule.forRootAsync` is used (not `forRoot`), with `imports: [ConfigModule]`, `inject: [databaseConfig.KEY]`,... _(from phase 01)_
+- Backend config uses `@nestjs/config` with namespaced `registerAs(name, () => ({...}))` factories — one file per domain in `src/config/`. _(from phase 02)_
+- Env variables are validated by a Joi schema in `src/config/env.validation.ts`, passed to `ConfigModule.forRoot({ validationSchema, validationOptio... _(from phase 02)_
+- Config is injected into modules via `ConfigType<typeof xxxConfig>` and `@Inject(xxxConfig.KEY)`; the same factory is importable as a plain functi... _(from phase 02)_
+- `data-source.ts` loads `.env` via `import 'dotenv/config'` at the top, then imports `databaseConfig` and calls it as a plain function. _(from phase 02)_
+- Database connection parameters (host, port, etc.) are sourced from a single `databaseConfig` factory — never duplicated between `AppModule` and ... _(from phase 02)_
+- `TypeOrmModule.forRootAsync` is used (not `forRoot`), with `imports: [ConfigModule]`, `inject: [databaseConfig.KEY]`, `useFactory` returning opt... _(from phase 02)_
 
 ## Inherited Deferred Capabilities
 
