@@ -3,6 +3,9 @@ export const UPLOAD_PART_SIZE = 67108864; // 64 MiB
 
 export const MAX_VIDEO_SIZE_BYTES = 10737418240; // 10 GiB
 
+/** ceil(MAX_VIDEO_SIZE_BYTES / UPLOAD_PART_SIZE): bound for part arrays in requests. */
+export const MAX_PART_COUNT = 160;
+
 export const PART_URL_TTL_SECONDS = 3600;
 
 /** Covers a long viewing session; Range requests after expiry fail. */

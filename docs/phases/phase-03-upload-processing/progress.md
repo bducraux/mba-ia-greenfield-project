@@ -1,7 +1,7 @@
 # phase-03-upload-processing — Progress
 
 **Status:** in_progress
-**SIs:** 8/15 completed
+**SIs:** 9/15 completed
 
 ### SI-03.1 — Infra: Redis + configuração raiz da fila
 - **Status:** completed
@@ -91,9 +91,16 @@
   - The integration spec builds a `ready` video directly: `initiate` + `storage.putObject` on `original_object_key` + `repository.update` to `ready`. It does not go through complete/worker, so no queue job is created. Cleanup reuses the existing `openUploads` abort/delete in `afterAll`. Range and download are checked through `src/test/storage.ts` (`storageHttpRequest`).
 
 ### SI-03.9 — VideosController: endpoints de upload
-- **Status:** pending
-- **Tests:** —
-- **Observations:** none
+- **Status:** completed
+- **Tests:** 9 passing (test/videos-upload.e2e-spec.ts, spec-derived from `specs/videos-upload.plan.md`; the SI's inline Tests section is empty). Re-run because AppModule changed: auth/swagger/app e2e (52), openapi-export.integration-spec (9), videos.module.spec (1), all green. tsc, eslint and `nest build` are clean, and the queue was confirmed unpaused after the run.
+- **Observations:**
+  - The E2E setup departs from three points of the spec's `Setup:`, to follow the existing helpers and patterns. (1) No `storageConfig` override to `publicEndpoint = STORAGE_ENDPOINT`: the part PUT goes through `src/test/storage.ts` (`storageHttpRequest`), so URLs are signed with the real config. (2) No `obliterate` of the `video-processing` queue: the suite uses the SI-03.5/03.7 pattern instead (pause in `beforeAll`, resume in `afterAll`, remove only its own jobs). (3) The videos bucket is not wiped: only the uploads and objects this suite created are aborted or deleted.
+  - Scenario 4.2 builds the document with `buildSwaggerDocument(app)` instead of `SwaggerModule.createDocument(app, buildSwaggerConfig())`. Only the former registers `ApiErrorEnvelope` in `extraModels`, which the `$ref` assertion needs.
+  - Request DTOs (`InitiateUploadDto`, `SignPartUrlsDto`, `CompleteUploadDto`/`CompletedPartDto`) follow `.claude/rules/nestjs-dtos.md`: only `class-validator` decorators plus JSDoc `@example`, no `@ApiProperty`. Response DTOs (`VideoResponseDto`, `InitiateUploadResponseDto`, `PartUrlsResponseDto`, `UploadedPartsResponseDto`) use explicit `@ApiProperty` and `implements` the service result interfaces, so they cannot drift from them.
+  - `MAX_PART_COUNT = 160` was added to `videos.constants.ts` for `@ArrayMaxSize` on `part_numbers`/`parts`.
+  - Class-level `@ApiBearerAuth('access-token')` (no `@Public()` routes in this controller). Local `ApiError(status, description)` / `ApiShortIdParam()` helpers in `videos.controller.ts` keep the per-status `@ApiResponse` + `ApiErrorEnvelope` declarations short.
+  - Pre-existing gap, out of scope: `npm run openapi:export` runs through `ts-node`, which does not apply the `@nestjs/swagger` CLI plugin. Request DTO schemas therefore come out as `properties: {}` in the committed `openapi.json`. This is true for the new video DTOs and has always been true for every auth DTO. `nest build` does apply the plugin (checked: `InitiateUploadDto` metadata has `file_name`, `mime_type`, `size` in `dist`), so Swagger UI at runtime is complete. Possible follow-up: run the export against the built `dist`, or use the plugin's `PluginMetadataGenerator` (the `src/metadata.ts` stub already anticipates this).
+  - `api.http` gained a "UPLOAD DE VÍDEO" section (requests 10–13, with `@name initiateUpload` capturing `short_id`).
 
 ### SI-03.10 — VideosController: consulta do vídeo e URLs de mídia
 - **Status:** pending
