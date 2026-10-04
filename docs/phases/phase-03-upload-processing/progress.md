@@ -1,7 +1,7 @@
 # phase-03-upload-processing — Progress
 
 **Status:** in_progress
-**SIs:** 13/15 completed
+**SIs:** 14/15 completed
 
 ### SI-03.1 — Infra: Redis + configuração raiz da fila
 - **Status:** completed
@@ -153,9 +153,15 @@
   - `ConfigModule.forRoot` and `TypeOrmModule.forRootAsync` are duplicated between `AppModule` and `WorkerModule` (the plan asks for the same `load` + schema). Follow-up: extract shared root config factories so the two cannot drift.
 
 ### SI-03.14 — E2E do pipeline: upload → processamento → ready
-- **Status:** pending
-- **Tests:** —
-- **Observations:** none
+- **Status:** completed
+- **Tests:** 5 passing (test/video-pipeline.e2e-spec.ts, ~11 s; the `ready` scenario reaches `ready` in about 1.7 s); Jest exits on its own (only the pre-existing mailer `CustomGC` handle is reported); tsc + eslint of touched files clean; queue confirmed unpaused with an empty wait list after the run.
+- **Observations:**
+  - The setup departs from TA1/TA3 in the same three ways the reviewer accepted in SI-03.9/03.10. (1) No `storageConfig` override to `publicEndpoint = STORAGE_ENDPOINT`: part PUTs, the anonymous thumbnail GET, the ranged playback GET and the download GET go through `src/test/storage.ts` (`storageHttpRequest`), so URLs are signed with the real config. (2) No `obliterate` of `video-processing`: `reset()` removes only the jobs of the suite's own videos (`jobId` = video id). The queue cannot be paused here, since the pipeline needs it consuming. (3) Buckets are not wiped: only the suite's own open uploads, source objects and thumbnails are aborted or deleted (keys read from the `videos` rows before `cleanAllTables`).
+  - The video-processing job may be consumed either by the in-process `WorkerModule` context (TA1) or by the `video-worker` container from SI-03.13, which listens on the same queue and was running during the run. Both run the same code against the same DB and storage, so the assertions hold either way. The in-process worker makes the suite self-sufficient when `video-worker` is down (e.g. CI). The container logged nothing during the run (the consumer does not log on success).
+  - `test/helpers/video-pipeline.ts` exposes a `VideoPipeline` class: `start()` (AppModule with `main.ts` pipes/filters + `WorkerModule` via `Test.createTestingModule(...).compile()` + `init()`, which starts the BullMQ Worker), `registerConfirmAndLogin()`, `initiate()`, `uploadFile(token, path, { size })` (splits by `part_size`, does not assert the complete status so scenario (c) can check 422), `getVideo()`, `waitForStatus(token, shortId, status, 30 s)` (polls every 250 ms; the timeout error shows the last status/reason), `reset()` and `close()`.
+  - Cleanup runs in `afterEach` (plus once in `beforeAll`), not before each test, so objects created by the last scenario are also removed. Scenario (e) waits for both uploads to reach `ready` before finishing, so no job is still running when `reset()` deletes rows and objects (otherwise a late thumbnail would be orphaned).
+  - The 10 GiB initiate in scenario (d) opens a real multipart upload (160 parts, no bytes); `reset()` aborts it.
+  - Beyond the ACs, scenario (a) also checks `audio_codec = aac`, `processed_at` set, the thumbnail's `Content-Type: image/jpeg`, and that the ranged response has exactly 1024 bytes. Scenario (b) also checks `thumbnail_url = null`.
 
 ### SI-03.15 — Documentação: CLAUDE.md, contrato de storage em produção e guia de testes
 - **Status:** pending
