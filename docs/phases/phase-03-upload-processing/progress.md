@@ -1,7 +1,7 @@
 # phase-03-upload-processing — Progress
 
 **Status:** in_progress
-**SIs:** 7/15 completed
+**SIs:** 8/15 completed
 
 ### SI-03.1 — Infra: Redis + configuração raiz da fila
 - **Status:** completed
@@ -82,9 +82,13 @@
   - AC "complete with enqueue failing → 503, video stays `uploading`, retry after Redis is back → `processing` with one job": the 503 / no-`markProcessing` half is covered by the unit spec. The retry half rests on the `NoSuchUpload` → `HeadObject` fallback (unit) plus `jobId` idempotency (SI-03.5 integration). No integration test stops Redis mid-suite.
 
 ### SI-03.8 — URLs de mídia: streaming e download
-- **Status:** pending
-- **Tests:** —
-- **Observations:** none
+- **Status:** completed
+- **Tests:** 70 passing (content-disposition.util.spec 6, videos.service.spec 54, videos.service.integration-spec 10); tsc + eslint of touched files clean; queue confirmed unpaused after the run
+- **Observations:**
+  - The ASCII `filename` fallback applies `NFKD` normalization before stripping non-ASCII, so `Férias "2026"` becomes `Ferias 2026.mp4` instead of `Frias 2026.mp4`. Non-ASCII characters are still removed, as the contract requires. Control characters (including CR/LF) are also stripped. If nothing printable is left (for example `日本語`), the fallback is `video.{ext}`.
+  - `filename*` uses RFC 5987 encoding, which adds percent-encoding for `'()*` (characters `encodeURIComponent` leaves unescaped). The AC string `F%C3%A9rias%20%222026%22.mp4` is matched exactly.
+  - TTLs are named constants `PLAYBACK_URL_TTL_SECONDS = 14400` and `DOWNLOAD_URL_TTL_SECONDS = 3600` in `videos.constants.ts`. `expires_at` is computed from a timestamp taken before signing, the same approach as `signPartUrls`. The return type `MediaUrl { url, expires_at }` is exported from `videos.service.ts` for SI-03.10's DTO.
+  - The integration spec builds a `ready` video directly: `initiate` + `storage.putObject` on `original_object_key` + `repository.update` to `ready`. It does not go through complete/worker, so no queue job is created. Cleanup reuses the existing `openUploads` abort/delete in `afterAll`. Range and download are checked through `src/test/storage.ts` (`storageHttpRequest`).
 
 ### SI-03.9 — VideosController: endpoints de upload
 - **Status:** pending

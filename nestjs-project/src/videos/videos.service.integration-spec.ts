@@ -10,6 +10,7 @@ import type { Queue } from 'bullmq';
 import {
   UploadSessionExpiredException,
   VideoNotFoundException,
+  VideoNotReadyException,
   VideoSizeMismatchException,
 } from '../common/exceptions/domain.exception';
 import queueConfig from '../config/queue.config';
@@ -264,6 +265,64 @@ describe('VideosService (integration)', () => {
       ).rejects.toBeInstanceOf(UploadSessionExpiredException);
       const after = await videoRepository.findOneByOrFail({ id: video.id });
       expect(after.processing_status).toBe('uploading');
+    });
+  });
+
+  describe('media URLs', () => {
+    const BYTES = Buffer.from(Array.from({ length: 4096 }, (_, i) => i % 256));
+
+    /** A `ready` video whose source object holds `BYTES`. */
+    async function readyVideo(userId: string, title: string): Promise<Video> {
+      const video = await initiate(userId, BYTES.length);
+      await storage.putObject('videos', video.original_object_key, BYTES, {
+        contentType: 'video/mp4',
+      });
+      await videoRepository.update(
+        { id: video.id },
+        { processing_status: 'ready', title },
+      );
+      return videoRepository.findOneByOrFail({ id: video.id });
+    }
+
+    it('issues a playback URL that storage serves with HTTP Range', async () => {
+      const owner = await createUserWithChannel();
+      const video = await readyVideo(owner.id, 'clip');
+
+      const { url } = await service.getPlaybackUrl(owner.id, video.short_id);
+      const res = await storageHttpRequest(url, {
+        headers: { Range: 'bytes=0-1023' },
+      });
+
+      expect(res.status).toBe(206);
+      expect(res.body).toHaveLength(1024);
+      expect(res.body.equals(BYTES.subarray(0, 1024))).toBe(true);
+    });
+
+    it('issues a download URL whose response is an attachment named after the title', async () => {
+      const owner = await createUserWithChannel();
+      const video = await readyVideo(owner.id, 'Férias "2026"');
+
+      const { url } = await service.getDownloadUrl(owner.id, video.short_id);
+      const res = await storageHttpRequest(url);
+
+      expect(res.status).toBe(200);
+      const disposition = res.headers['content-disposition'] as string;
+      expect(disposition).toMatch(/^attachment;/);
+      expect(disposition).toContain(
+        `filename*=UTF-8''F%C3%A9rias%20%222026%22.mp4`,
+      );
+      const fallback = /filename="([^"]*)"/.exec(disposition)?.[1];
+      expect(fallback).toBe('Ferias 2026.mp4');
+      expect(fallback).toMatch(/^[\x20-\x7e]+$/);
+    });
+
+    it('refuses media URLs while the video is still uploading', async () => {
+      const owner = await createUserWithChannel();
+      const video = await initiate(owner.id);
+
+      await expect(
+        service.getPlaybackUrl(owner.id, video.short_id),
+      ).rejects.toBeInstanceOf(VideoNotReadyException);
     });
   });
 });

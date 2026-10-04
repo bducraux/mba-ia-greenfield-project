@@ -9,6 +9,7 @@ import {
   UploadNotInProgressException,
   UploadSessionExpiredException,
   VideoNotFoundException,
+  VideoNotReadyException,
   VideoSizeMismatchException,
   VideoTooLargeException,
 } from '../common/exceptions/domain.exception';
@@ -20,14 +21,17 @@ import {
 import { StorageService } from '../storage/storage.service';
 import { QueueUnavailableError } from '../video-processing/video-processing.errors';
 import { VideoProcessingProducer } from '../video-processing/video-processing.producer';
+import { buildAttachmentDisposition } from './content-disposition.util';
 import { Video } from './entities/video.entity';
 import { VideoLifecycleService } from './video-lifecycle.service';
 import { isValidShortId, generateShortId } from './short-id.util';
 import { toVideoResponse, type VideoResponse } from './video-response.mapper';
 import {
+  DOWNLOAD_URL_TTL_SECONDS,
   MAX_TITLE_LENGTH,
   MAX_VIDEO_SIZE_BYTES,
   PART_URL_TTL_SECONDS,
+  PLAYBACK_URL_TTL_SECONDS,
   SHORT_ID_MAX_ATTEMPTS,
   SOURCE_OBJECT_NAME,
   UPLOAD_PART_SIZE,
@@ -63,6 +67,11 @@ export interface UploadedParts {
 export interface CompletedUploadPart {
   part_number: number;
   etag: string;
+}
+
+export interface MediaUrl {
+  url: string;
+  expires_at: string;
 }
 
 interface ParsedFileName {
@@ -327,8 +336,54 @@ export class VideosService {
     return this.toResponse(current);
   }
 
+  /** Presigned GET for `<video src>`; storage serves HTTP Range natively. */
+  async getPlaybackUrl(userId: string, shortId: string): Promise<MediaUrl> {
+    const video = await this.findReadyOwned(userId, shortId);
+    return this.presignMedia(video, PLAYBACK_URL_TTL_SECONDS);
+  }
+
+  /** Presigned GET whose response forces an attachment download. */
+  async getDownloadUrl(userId: string, shortId: string): Promise<MediaUrl> {
+    const video = await this.findReadyOwned(userId, shortId);
+    const key = video.original_object_key;
+    const ext = key.slice(key.lastIndexOf('.') + 1);
+    return this.presignMedia(
+      video,
+      DOWNLOAD_URL_TTL_SECONDS,
+      buildAttachmentDisposition(video.title, ext),
+    );
+  }
+
   toResponse(video: Video): VideoResponse {
     return toVideoResponse(video, this.storage);
+  }
+
+  private async findReadyOwned(
+    userId: string,
+    shortId: string,
+  ): Promise<Video> {
+    const video = await this.findOwnedByShortId(userId, shortId);
+    if (video.processing_status !== 'ready') {
+      throw new VideoNotReadyException();
+    }
+    return video;
+  }
+
+  private async presignMedia(
+    video: Video,
+    expiresIn: number,
+    responseContentDisposition?: string,
+  ): Promise<MediaUrl> {
+    const signedAt = Date.now();
+    const url = await this.storage.presignGetObject(
+      'public',
+      video.original_object_key,
+      { expiresIn, responseContentDisposition },
+    );
+    return {
+      url,
+      expires_at: new Date(signedAt + expiresIn * 1000).toISOString(),
+    };
   }
 
   private async findUploadingOwned(

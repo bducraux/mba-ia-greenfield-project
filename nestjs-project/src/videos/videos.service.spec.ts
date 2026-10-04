@@ -10,6 +10,7 @@ import {
   UploadNotInProgressException,
   UploadSessionExpiredException,
   VideoNotFoundException,
+  VideoNotReadyException,
   VideoSizeMismatchException,
   VideoTooLargeException,
 } from '../common/exceptions/domain.exception';
@@ -23,7 +24,7 @@ import { QueueUnavailableError } from '../video-processing/video-processing.erro
 import { VideoProcessingProducer } from '../video-processing/video-processing.producer';
 import { Video } from './entities/video.entity';
 import { VideoLifecycleService } from './video-lifecycle.service';
-import { VideosService } from './videos.service';
+import { VideosService, type MediaUrl } from './videos.service';
 
 const USER_ID = 'user-1';
 const CHANNEL = { id: 'channel-1', user_id: USER_ID } as Channel;
@@ -73,6 +74,7 @@ describe('VideosService', () => {
     completeMultipartUpload: jest.Mock;
     headObject: jest.Mock;
     deleteObject: jest.Mock;
+    presignGetObject: jest.Mock;
   };
   let channels: { findByUserId: jest.Mock };
   let lifecycle: { markProcessing: jest.Mock; markUploadRejected: jest.Mock };
@@ -101,6 +103,7 @@ describe('VideosService', () => {
       completeMultipartUpload: jest.fn().mockResolvedValue(undefined),
       headObject: jest.fn(),
       deleteObject: jest.fn().mockResolvedValue(undefined),
+      presignGetObject: jest.fn().mockResolvedValue('http://signed/get'),
     };
     channels = { findByUserId: jest.fn().mockResolvedValue(CHANNEL) };
     lifecycle = {
@@ -655,6 +658,88 @@ describe('VideosService', () => {
         ).rejects.toBeInstanceOf(InvalidUploadPartsException);
         expect(storage.completeMultipartUpload).not.toHaveBeenCalled();
       });
+    });
+  });
+
+  describe('media URLs', () => {
+    function readyVideo(partial: Partial<Video> = {}): Video {
+      return persisted({
+        short_id: VALID_SHORT_ID,
+        channel_id: CHANNEL.id,
+        original_object_key: `${VALID_SHORT_ID}/source.webm`,
+        title: 'Férias',
+        processing_status: 'ready',
+        ...partial,
+      });
+    }
+
+    const NOT_READY = ['uploading', 'processing', 'failed'] as const;
+
+    type MediaUrlMethod = (
+      s: VideosService,
+    ) => (userId: string, shortId: string) => Promise<MediaUrl>;
+
+    describe.each<[string, MediaUrlMethod]>([
+      ['getPlaybackUrl', (s) => (u, id) => s.getPlaybackUrl(u, id)],
+      ['getDownloadUrl', (s) => (u, id) => s.getDownloadUrl(u, id)],
+    ])('%s', (_name, method) => {
+      it.each(NOT_READY)(
+        'should reject a %s video with VIDEO_NOT_READY',
+        async (status) => {
+          repo.findOne.mockResolvedValue(
+            readyVideo({ processing_status: status }),
+          );
+
+          await expect(
+            method(service)(USER_ID, VALID_SHORT_ID),
+          ).rejects.toBeInstanceOf(VideoNotReadyException);
+          expect(storage.presignGetObject).not.toHaveBeenCalled();
+        },
+      );
+
+      it('should reject a video the caller does not own with VIDEO_NOT_FOUND', async () => {
+        repo.findOne.mockResolvedValue(null);
+
+        await expect(
+          method(service)(USER_ID, VALID_SHORT_ID),
+        ).rejects.toBeInstanceOf(VideoNotFoundException);
+      });
+    });
+
+    it('should presign playback on the public client with a 4h TTL', async () => {
+      repo.findOne.mockResolvedValue(readyVideo());
+      const before = Date.now();
+
+      const result = await service.getPlaybackUrl(USER_ID, VALID_SHORT_ID);
+
+      expect(result.url).toBe('http://signed/get');
+      expect(storage.presignGetObject).toHaveBeenCalledWith(
+        'public',
+        `${VALID_SHORT_ID}/source.webm`,
+        { expiresIn: 14400, responseContentDisposition: undefined },
+      );
+      const expiresAt = Date.parse(result.expires_at);
+      expect(expiresAt).toBeGreaterThanOrEqual(before + 14400_000);
+      expect(expiresAt).toBeLessThanOrEqual(Date.now() + 14400_000);
+    });
+
+    it('should presign download as an attachment named after the title with a 1h TTL', async () => {
+      repo.findOne.mockResolvedValue(readyVideo());
+      const before = Date.now();
+
+      const result = await service.getDownloadUrl(USER_ID, VALID_SHORT_ID);
+
+      expect(storage.presignGetObject).toHaveBeenCalledWith(
+        'public',
+        `${VALID_SHORT_ID}/source.webm`,
+        {
+          expiresIn: 3600,
+          responseContentDisposition: `attachment; filename="Ferias.webm"; filename*=UTF-8''F%C3%A9rias.webm`,
+        },
+      );
+      const expiresAt = Date.parse(result.expires_at);
+      expect(expiresAt).toBeGreaterThanOrEqual(before + 3600_000);
+      expect(expiresAt).toBeLessThanOrEqual(Date.now() + 3600_000);
     });
   });
 });

@@ -5,6 +5,11 @@ export const MAX_VIDEO_SIZE_BYTES = 10737418240; // 10 GiB
 
 export const PART_URL_TTL_SECONDS = 3600;
 
+/** Covers a long viewing session; Range requests after expiry fail. */
+export const PLAYBACK_URL_TTL_SECONDS = 14400;
+
+export const DOWNLOAD_URL_TTL_SECONDS = 3600;
+
 export const MAX_TITLE_LENGTH = 100;
 
 export const SHORT_ID_MAX_ATTEMPTS = 3;
