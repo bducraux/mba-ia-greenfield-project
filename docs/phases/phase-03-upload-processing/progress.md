@@ -1,7 +1,7 @@
 # phase-03-upload-processing — Progress
 
 **Status:** in_progress
-**SIs:** 11/15 completed
+**SIs:** 12/15 completed
 
 ### SI-03.1 — Infra: Redis + configuração raiz da fila
 - **Status:** completed
@@ -127,9 +127,17 @@
   - `MediaProbeService` is not registered in any module yet; `VideoProcessingConsumerModule` provides it in SI-03.12.
 
 ### SI-03.12 — VideoProcessingConsumer: metadados, thumbnail e falhas
-- **Status:** pending
-- **Tests:** —
-- **Observations:** none
+- **Status:** completed
+- **Tests:** 44 passing after the reviewer's SRP adjustment below (video-processing.consumer.spec 21, video-processing.consumer.integration-spec 6, video-processing-consumer.module.spec 1, videos.module.spec 1, video-lifecycle.service.integration-spec 15); no open handles; tsc + eslint of touched files clean; queue confirmed unpaused with an empty wait list after the run.
+- **Observations:**
+  - SI-03.11 reviewer decision applied: `MediaUnsupportedContentError` from `probe` **or** `extractThumbnail` → `markFailed(UNSUPPORTED_FORMAT)` + `UnrecoverableError`, the same path as a gate rejection. `MediaProcessFailedError`/`MediaProcessTimeoutError`, storage errors other than `NotFound` on HEAD, and `PutObject` failures propagate unchanged (retryable).
+  - **Reviewer decision (2026-10-04), departs from the SI's "repositório de leitura":** by the root CLAUDE.md Single Responsibility principle, the worker must not reach into another module's repository. `VideosModule` does **not** export `TypeOrmModule` (it was exported in a first pass, then reverted; no diff remains). The consumer reads the video through the new `VideoLifecycleService.findById(id): Promise<Video | null>` (`findOneBy({ id })`). `VideoLifecycleService` was already exported, and that is the only change to a previous SI's file. Covered by two new cases in `video-lifecycle.service.integration-spec.ts` (found, and `null` for an unknown id); the consumer unit spec mocks `findById` instead of the repository.
+  - `onFailed` handles `job === undefined` (BullMQ's `failed` event typing allows it) and treats `opts.attempts` missing as 1. BullMQ increments `attemptsMade` before emitting `failed` (checked in the bullmq source via context7), so `attemptsMade >= attempts` is the last attempt. It never rethrows: a `markFailed` error is logged (event-handler exception in `.claude/rules/nestjs-services.md`).
+  - New constants in `video-processing.constants.ts`: `SOURCE_URL_TTL_SECONDS = 3600`, `THUMBNAIL_CONTENT_TYPE`, `THUMBNAIL_CACHE_CONTROL`, `THUMBNAIL_KEY_RANDOM_BYTES = 8`.
+  - The integration spec builds the module without `BullModule` and calls `process()` directly, so no BullMQ Worker is started and the shared queue is not touched (no pause/resume needed). The module compilation test only calls `compile()`, which does not run `onModuleInit`, so it also starts no Worker. Source objects go under `{shortId}/source.{ext}` with a fresh short id per test; source and thumbnail objects are deleted in `afterAll`. The anonymous thumbnail check uses `src/test/storage.ts` (`storageHttpRequest`) on `buildPublicObjectUrl`.
+  - AC "transient error on all 3 attempts → `PROCESSING_FAILED`, still `processing` before the 3rd" is covered at unit level (`onFailed` with `attemptsMade` 1, 2, 3); the real retry/backoff path is exercised end to end only in SI-03.14 if at all.
+  - Follow-up (not in the plan; acknowledged by the reviewer, kept as a note): if `markReady` finds the row already moved (returns `false`, e.g. a concurrent final failure), the thumbnail just uploaded is left orphaned in the thumbnails bucket. Cleanup could delete it in that case.
+  - The pg "client.query() when the client is already executing a query" DeprecationWarning appears again (TypeORM/pg internals, already noted in SI-03.6).
 
 ### SI-03.13 — Infra: entrypoint do worker + serviço video-worker
 - **Status:** pending

@@ -85,6 +85,25 @@ describe('VideoLifecycleService (integration)', () => {
   const reload = (video: Video): Promise<Video> =>
     videoRepository.findOneByOrFail({ id: video.id });
 
+  describe('findById', () => {
+    it('returns the video by id', async () => {
+      const video = await videoIn('processing');
+
+      await expect(lifecycle.findById(video.id)).resolves.toMatchObject({
+        id: video.id,
+        short_id: video.short_id,
+        original_object_key: video.original_object_key,
+        processing_status: 'processing',
+      });
+    });
+
+    it('returns null for an unknown id', async () => {
+      await expect(
+        lifecycle.findById('00000000-0000-4000-8000-000000000000'),
+      ).resolves.toBeNull();
+    });
+  });
+
   describe('markProcessing', () => {
     it('moves uploading to processing', async () => {
       const video = await videoIn('uploading');

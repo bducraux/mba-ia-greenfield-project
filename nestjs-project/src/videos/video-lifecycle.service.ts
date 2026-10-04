@@ -29,6 +29,11 @@ export class VideoLifecycleService {
     private readonly videoRepository: Repository<Video>,
   ) {}
 
+  /** `null` when the video no longer exists (the worker treats it as a no-op). */
+  async findById(id: string): Promise<Video | null> {
+    return this.videoRepository.findOneBy({ id });
+  }
+
   async markProcessing(id: string): Promise<boolean> {
     return this.transition(id, ['uploading'], {
       processing_status: 'processing',
