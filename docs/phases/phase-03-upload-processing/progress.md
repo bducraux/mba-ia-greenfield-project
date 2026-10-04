@@ -1,7 +1,7 @@
 # phase-03-upload-processing — Progress
 
 **Status:** in_progress
-**SIs:** 5/15 completed
+**SIs:** 6/15 completed
 
 ### SI-03.1 — Infra: Redis + configuração raiz da fila
 - **Status:** completed
@@ -59,9 +59,17 @@
   - `VideoProcessingProducerModule` is not imported anywhere yet; `VideosModule` wires it in SI-03.7.
 
 ### SI-03.6 — VideosService: iniciar upload + consulta do dono + serialização
-- **Status:** pending
-- **Tests:** —
-- **Observations:** none
+- **Status:** completed
+- **Tests:** 33 passing (videos.service.spec, videos.service.integration-spec, channels.service.integration-spec, videos.module.spec); tsc + eslint of touched files clean
+- **Observations:**
+  - The object key contains the `short_id`, so each `short_id` collision retry aborts the multipart upload of the colliding key and creates a new one under the new id. The SI's "abort when the insert fails" rule is applied on every attempt: any insert failure aborts that attempt's upload, and only `23505` on `short_id` retries (up to 3 attempts, then the original error propagates → 500).
+  - Upload constants and the extension↔mime allowlist live in `src/videos/videos.constants.ts` (`UPLOAD_PART_SIZE`, `MAX_VIDEO_SIZE_BYTES`, `PART_URL_TTL_SECONDS` for SI-03.7, `MAX_TITLE_LENGTH`, `SHORT_ID_MAX_ATTEMPTS`, `VIDEO_EXTENSION_MIME_TYPES`).
+  - `title` is truncated by code point (`Array.from`), matching Postgres `varchar(100)` character semantics and never splitting a surrogate pair. Extension matching is case-insensitive (`clip.WEBM` is accepted). A dotfile name like `.mp4` counts as having no extension → 415, so an empty title is impossible.
+  - `initiateUpload` returns the serialized `{ video: VideoResponse, upload }`. `findOwnedByShortId` returns the `Video` entity (later SIs need the internal fields for storage calls), and `VideosService.toResponse(video)` exposes the mapper. `video-response.mapper.ts` is a pure function `toVideoResponse(video, storage)` that also exports the `VideoResponse` interface (SI-03.9 can build the Swagger DTO from it).
+  - A user without a channel: `initiateUpload` throws a plain `Error` (broken invariant → 500); `findOwnedByShortId` throws `VideoNotFoundException`.
+  - `isShortIdUniqueViolation` duplicates the shape of `ChannelsService`'s private `isPgUniqueViolationOnColumn`. A follow-up could extract a shared `src/common/database/pg-errors.ts` helper; it was not refactored here (out of scope).
+  - `VideosModule` is not yet imported by `AppModule`; that is expected with the controller in SI-03.9.
+  - The test runner showed the pg warning "Calling client.query() when the client is already executing a query is deprecated". It already appears when running the TypeORM CLI (seen in SI-03.4), so it comes from TypeORM/pg internals and not from this SI's code. It will matter when pg is upgraded to v9.
 
 ### SI-03.7 — Sessão de upload: URLs de parts, parts enviadas e complete (enfileirar → processing)
 - **Status:** pending
