@@ -2,10 +2,10 @@
 kind: phase
 name: phase-03-upload-processing
 status: dirty
-issue_count: 0
+issue_count: 3
 sources_mtime:
-  docs/phases/phase-03-upload-processing/context.md: "2026-10-03T20:25:28-03:00"
-  docs/decisions/technical-decisions-phase-03-upload-processing.md: "2026-10-03T20:13:01-03:00"
+  docs/phases/phase-03-upload-processing/context.md: "2026-10-04T00:55:04-03:00"
+  docs/decisions/technical-decisions-phase-03-upload-processing.md: "2026-10-03T20:32:34-03:00"
 issues:
   - id: IC-1
     status: resolved
@@ -31,6 +31,9 @@ issues:
     status: resolved
     summary: "TD-14 accepts MOV, but TD-06 playback contract is MP4/WebM original"
     resolved_by: phase-03-upload-processing/TD-14
+  - id: IC-7
+    status: open
+    summary: "TD-15 prescribes FE next/image remotePatterns in a backend-only phase"
   - id: AMB-1
     status: resolved
     summary: "Who may stream/download a video in Phase 03 (owner only vs anyone)?"
@@ -43,6 +46,9 @@ issues:
     status: resolved
     summary: "Draft pre-registration: required fields, defaults and owner entity"
     resolved_by: clarification
+  - id: AMB-4
+    status: open
+    summary: "Outcome of complete-time HeadObject check failure is undefined"
   - id: MD-1
     status: resolved
     summary: "No TD fixes accepted input formats / MIME allowlist at initiate"
@@ -51,6 +57,9 @@ issues:
     status: resolved
     summary: "No TD on public-read thumbnails vs private videos in one bucket"
     resolved_by: phase-03-upload-processing/TD-15
+  - id: MD-3
+    status: open
+    summary: "No TD on who provisions buckets, CORS, lifecycle and public-read"
   - id: OQ-1
     status: resolved
     summary: "TD-03 pending — Frontend Upload Client"
@@ -72,15 +81,15 @@ advisories: []
 
 ### Inconsistencies
 
-_None._
+- **IC-7** — TD-03, TD-12 and TD-13 all fix Phase 03 as "backend only, UI deferred to Phase 03 FE slice", and IC-5 already removed an FE-side parameter from TD-14 for the same reason. TD-15's Recommendation still prescribes FE work: "The FE adds the public storage host to `next/image` `remotePatterns`." `/plan-build` would either emit an FE step in a backend-only phase or drop the parameter silently. Explicit choice: (a) append a Revision to TD-15 moving the `remotePatterns` parameter to a recorded follow-up for the Phase 03 frontend slice (same treatment as IC-5); (b) keep it and add `next-frontend` as an affected subproject of this phase (contradicts TD-03/TD-12/TD-13).
 
 ### Ambiguities
 
-_None._
+- **AMB-4** — TD-02 says the 10 GiB limit is "re-checked at complete via `HeadObject`". The TD-11 revision defines only `uploading → processing` on multipart complete, and its `failure_reason` set (`UNSUPPORTED_FORMAT`, `PROCESSING_FAILED`, `SOURCE_MISSING`) has no code for a complete-time violation. Undefined: what the complete endpoint does when the assembled object exceeds 10 GiB or differs from the declared `size`. Open points are the HTTP status and domain code, whether the object is deleted, and the row's resulting state (stays `uploading`, a new `uploading → failed` transition with a new reason code, or row deleted). Explicit choice: clarify the complete-time rejection behavior and record it as a Revision of TD-02 / TD-11.
 
 ### Missing Decisions
 
-_None._
+- **MD-3** — Capability "Serviço de armazenamento de arquivos (vídeos e thumbnails)". TD-02 (bucket lifecycle rule aborting incomplete multipart after 24h), TD-04 (bucket CORS for `STORAGE_CORS_ORIGIN`) and TD-15 (two buckets, anonymous `Read`-only and no `List` on thumbnails) all assume bucket-level configuration exists. No TD decides who creates and configures the buckets in dev/test (SeaweedFS) and in production. Options include idempotent app/worker bootstrap via `@aws-sdk/client-s3` at startup, a Compose init container or script, test-setup provisioning only, or infra-managed (IaC) in prod. This choice shapes Compose services, integration-test setup and the prod deploy contract. Explicit choice: run /research to add a TD (Scope: Backend or Repo-wide) covering storage bucket provisioning (creation, CORS, lifecycle, public-read policy) per environment.
 
 ### Dependency Gaps
 
