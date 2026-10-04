@@ -1,7 +1,7 @@
 # phase-03-upload-processing — Progress
 
 **Status:** in_progress
-**SIs:** 1/15 completed
+**SIs:** 2/15 completed
 
 ### SI-03.1 — Infra: Redis + configuração raiz da fila
 - **Status:** completed
@@ -14,9 +14,16 @@
   - `QueueModule` is not yet imported by `AppModule` (plan wires it through the producer/VideosModule in later SIs); only `queueConfig` was added to `ConfigModule.forRoot({ load })`.
 
 ### SI-03.2 — Infra: SeaweedFS + provisionamento dos buckets (storage-init)
-- **Status:** pending
-- **Tests:** —
-- **Observations:** none
+- **Status:** completed
+- **Tests:** no tests (Infra; ACs verified manually — see observations)
+- **Observations:**
+  - Pinned images: `chrislusf/seaweedfs:4.48` (latest release tag, 2026-09-28) and `amazon/aws-cli:2.37.9`.
+  - Identity file coexists with `weed mini`'s embedded IAM (`-s3.config` accepted, "Starting S3 API Server with standard IAM"); the TD-16 `weed shell s3.anonymous.set` fallback was not needed. The file is rendered from env at container start by `docker/seaweedfs/entrypoint.sh` (writes `/tmp/s3.json`, then execs the image's `/entrypoint.sh mini -s3.config=…`), since the identity JSON cannot read env vars itself.
+  - Healthcheck uses `wget` on the S3 gateway's `/healthz` (`curl`/`wget` both exist in the image).
+  - No data volume on `seaweedfs` (matches the existing `db` service, which has none); objects are lost on container removal, buckets are re-created by `storage-init`.
+  - ACs verified: storage-init exit 0 on first run (buckets created) and on two re-runs (bucket list, CORS and lifecycle identical before/after); anonymous GET of a thumbnail object → 200; anonymous list of thumbnails bucket → 403; anonymous GET/list on videos bucket → 403; anonymous PUT on thumbnails → 403; app credentials can put/list on both buckets and cannot `CreateBucket`. Probe objects were deleted afterwards.
+  - AC "only then starts nestjs-api" verified only at the Compose level (`depends_on: storage-init: service_completed_successfully` + `docker compose up -d` waited for storage-init to exit 0); the already-running `nestjs-api` container was not force-recreated to avoid restarting the reviewer's dev container.
+  - SeaweedFS limitation (emulator, not in TD-16): bucket-scoped `Write:<bucket>` on the app identity also authorizes `PutBucketCors` (verified — a probe overwrote the CORS, restored by re-running storage-init). On SeaweedFS there is no finer-grained action than `Write` to separate object writes from bucket-config writes; prod contract (SI-03.15) should still scope the app's IAM to object-level actions only.
 
 ### SI-03.3 — StorageService com clientes S3 interno e público
 - **Status:** pending
