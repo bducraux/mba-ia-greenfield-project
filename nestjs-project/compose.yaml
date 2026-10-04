@@ -17,6 +17,32 @@ services:
       storage-init:
         condition: service_completed_successfully
 
+  video-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    # node_modules lives in the shared bind mount and is installed through
+    # nestjs-api; wait for npm's hidden lockfile (written when an install
+    # finishes) instead of failing, so a fresh checkout does not crash-loop.
+    command:
+      - sh
+      - -c
+      - |
+        until [ -f node_modules/.package-lock.json ]; do
+          echo "video-worker: waiting for node_modules (run: docker compose exec nestjs-api npm install)"
+          sleep 5
+        done
+        exec npm run start:worker:dev
+    volumes:
+      - .:/home/node/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      storage-init:
+        condition: service_completed_successfully
+
   db:
     image: postgres:17
     ports:

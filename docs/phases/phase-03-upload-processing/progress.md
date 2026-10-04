@@ -1,7 +1,7 @@
 # phase-03-upload-processing — Progress
 
 **Status:** in_progress
-**SIs:** 12/15 completed
+**SIs:** 13/15 completed
 
 ### SI-03.1 — Infra: Redis + configuração raiz da fila
 - **Status:** completed
@@ -140,9 +140,17 @@
   - The pg "client.query() when the client is already executing a query" DeprecationWarning appears again (TypeORM/pg internals, already noted in SI-03.6).
 
 ### SI-03.13 — Infra: entrypoint do worker + serviço video-worker
-- **Status:** pending
-- **Tests:** —
-- **Observations:** none
+- **Status:** completed
+- **Tests:** 2 passing (worker.module.spec, app.module.spec); Jest exits on its own (EXIT 0, no "did not exit"); tsc + eslint of touched files clean; `nest build` (API) clean. 1 fix attempt: the first run failed with `Entity metadata for Channel#user was not found` (see the first bullet).
+- **Observations:**
+  - **Reviewer decision (2026-10-04), extends the plan's TA1:** `WorkerModule` also imports `UsersModule`. With `autoLoadEntities`, TypeORM only loads entities registered through `forFeature`. The worker graph (consumer → `VideosModule` → `ChannelsModule`) registers `Video` and `Channel`, but `Channel` has a bidirectional `@OneToOne` to `User`, which only `UsersModule` registers. The API never hit this because `AuthModule` imports `UsersModule`. Without the import, the plan's `WorkerModule` fails to start (both in the test and in the real container). Cost: the worker context also builds `UsersService`/`ChannelsService` without using them.
+  - **Crash-loop guard (user-requested; simplest option chosen):** the `video-worker` command is an inline `sh -c` loop that waits for `node_modules/.package-lock.json` (npm's hidden lockfile, written only when an install finishes), logging every 5 s that `docker compose exec nestjs-api npm install` is needed, then `exec npm run start:worker:dev`. This departs from the plan's literal `command: npm run start:worker:dev`. There is no `restart:` policy (default `"no"`), and the worker never installs dependencies itself, so it cannot race an `npm install` running in `nestjs-api`. Starting the worker with `docker compose up` is the documented exception to the "never start the application" rule in `nestjs-project/CLAUDE.md` (SI-03.15 documents it).
+  - `dist-worker` is excluded in `tsconfig.worker.json`, `tsconfig.build.json` and `tsconfig.json` (the last one gained an explicit `exclude: ["node_modules", "dist", "dist-worker"]`). Without that, `npx tsc --noEmit` read 91 `.d.ts` files from `dist-worker/` (only `outDir` = `dist` is excluded by default), and the API `nest build` would read them too. Each build keeps its own `.tsbuildinfo` (`dist/tsconfig.build.tsbuildinfo`, `dist-worker/tsconfig.worker.tsbuildinfo`). `dist-worker/` holds the whole `src/` compiled (the tsconfig is not entry-scoped), and that is expected.
+  - ACs verified against the real service: `docker compose up -d video-worker` started it after db/redis/storage-init. Logs show `Found 0 errors` and every module initialized, with no errors. A probe job (random `videoId`, so the consumer no-ops) was consumed in 35 ms with `getWorkers() = 1`. With `video-worker` stopped, a probe job stayed `waiting` after 5 s with `getWorkers() = 0` (removed afterwards; the wait list is empty). `npm run build` in `nestjs-api` while the worker's watch was running added no log lines on the worker and left `dist-worker/` intact. Probe scripts were deleted afterwards. AC "an upload completed through the API reaches `ready`" was not run by hand here, because it needs the API process; the pipeline E2E in SI-03.14 covers it.
+  - `npm run start:dev` was not started (CLAUDE.md rule). The coexistence AC was checked with the API's `nest build`, which shares the same `deleteOutDir` behavior.
+  - The module tests keep the plan's `*.module.spec.ts` names, following the existing repo pattern (`users/auth/channels.module.spec.ts`, `video-processing-consumer.module.spec.ts` also connect to the DB). Follow-up: this is inconsistent with `nestjs-project/CLAUDE.md` "Test Type Selection" and `.claude/rules/nestjs-testing.md`, which say a test opening a DB connection must be `*.integration-spec.ts`. Either rename the module specs or document module compilation tests as an exception.
+  - `--detectOpenHandles` reports a `CustomGC` handle from `@css-inline/css-inline` (loaded by the mailer's `HandlebarsAdapter` via `AppModule` → `AuthModule` → `MailModule`). It already shows up in `auth.module.spec.ts` and does not keep Jest alive. Not acted on.
+  - `ConfigModule.forRoot` and `TypeOrmModule.forRootAsync` are duplicated between `AppModule` and `WorkerModule` (the plan asks for the same `load` + schema). Follow-up: extract shared root config factories so the two cannot drift.
 
 ### SI-03.14 — E2E do pipeline: upload → processamento → ready
 - **Status:** pending
