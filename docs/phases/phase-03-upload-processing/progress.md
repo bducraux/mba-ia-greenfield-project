@@ -1,7 +1,7 @@
 # phase-03-upload-processing — Progress
 
 **Status:** in_progress
-**SIs:** 4/15 completed
+**SIs:** 5/15 completed
 
 ### SI-03.1 — Infra: Redis + configuração raiz da fila
 - **Status:** completed
@@ -49,9 +49,14 @@
   - CLI ACs were checked against the dev DB: `migration:revert` removed only `videos`, and `migration:run` recreated it.
 
 ### SI-03.5 — Producer da fila video-processing
-- **Status:** pending
-- **Tests:** —
-- **Observations:** none
+- **Status:** completed
+- **Tests:** 4 passing (video-processing.producer.integration-spec 3, video-processing-producer.module.spec 1); no open handles; tsc + eslint of touched files clean
+- **Observations:**
+  - `QueueUnavailableError` lives in `src/video-processing/video-processing.errors.ts`, following the `storage.errors.ts` pattern. `ENQUEUE_TIMEOUT_MS = 5000` is a named constant in `video-processing.constants.ts`. `PROCESS_VIDEO_JOB_OPTIONS` uses `as const satisfies JobsOptions`.
+  - The integration spec runs against the real `video-processing` queue on the dev Redis. It pauses the queue in `beforeAll` and resumes it in `afterAll`, so a running `video-worker` (from SI-03.13) cannot consume and auto-remove the test jobs mid-assertion. Each test uses a random `videoId` and removes only its own job, never `drain`/`obliterate`, so other jobs on the shared broker are left alone. After the run the queue was confirmed unpaused with no leftover jobs. If a run is killed between `pause` and `resume`, the dev queue stays paused (`redis-cli HDEL bull:video-processing:meta paused` restores it).
+  - The "Redis unreachable" case overrides the `queueConfig.KEY` provider with port `1` on the `redis` host. The rejection comes from the 5 s timeout path (the suite takes about 6 s).
+  - BullMQ v6 has no `paused` job state (paused jobs stay in `wait`), so the duplicate-enqueue assertion reads `waiting` + `prioritized`.
+  - `VideoProcessingProducerModule` is not imported anywhere yet; `VideosModule` wires it in SI-03.7.
 
 ### SI-03.6 — VideosService: iniciar upload + consulta do dono + serialização
 - **Status:** pending
