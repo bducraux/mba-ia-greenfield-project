@@ -23,6 +23,7 @@ import { ApiErrorEnvelope } from '../common/openapi/api-error-envelope.dto';
 import { CompleteUploadDto } from './dto/complete-upload.dto';
 import { InitiateUploadResponseDto } from './dto/initiate-upload-response.dto';
 import { InitiateUploadDto } from './dto/initiate-upload.dto';
+import { MediaUrlResponseDto } from './dto/media-url-response.dto';
 import { PartUrlsResponseDto } from './dto/part-urls-response.dto';
 import { SignPartUrlsDto } from './dto/sign-part-urls.dto';
 import { UploadedPartsResponseDto } from './dto/uploaded-parts-response.dto';
@@ -169,5 +170,74 @@ export class VideosController {
     @Body() dto: CompleteUploadDto,
   ): Promise<VideoResponseDto> {
     return this.videosService.completeUpload(user.sub, shortId, dto.parts);
+  }
+
+  @Get(':shortId')
+  @ApiOperation({
+    summary: 'Get a video',
+    description:
+      'Owner view of the video. Poll it to follow processing (`processing_status`, `failure_reason`, `thumbnail_url`).',
+  })
+  @ApiShortIdParam()
+  @ApiResponse({
+    status: 200,
+    description: 'The video',
+    type: VideoResponseDto,
+  })
+  @ApiError(401, 'Missing or invalid access token')
+  @ApiError(404, 'VIDEO_NOT_FOUND')
+  async findOne(
+    @CurrentUser() user: JwtPayload,
+    @Param('shortId') shortId: string,
+  ): Promise<VideoResponseDto> {
+    const video = await this.videosService.findOwnedByShortId(
+      user.sub,
+      shortId,
+    );
+    return this.videosService.toResponse(video);
+  }
+
+  @Get(':shortId/playback-url')
+  @ApiOperation({
+    summary: 'Get a streaming URL',
+    description:
+      'Presigned URL (4 h TTL) for `<video src>`; storage serves HTTP Range requests natively. Only for `ready` videos.',
+  })
+  @ApiShortIdParam()
+  @ApiResponse({
+    status: 200,
+    description: 'Presigned streaming URL',
+    type: MediaUrlResponseDto,
+  })
+  @ApiError(401, 'Missing or invalid access token')
+  @ApiError(404, 'VIDEO_NOT_FOUND')
+  @ApiError(409, 'VIDEO_NOT_READY: the video has not finished processing')
+  async getPlaybackUrl(
+    @CurrentUser() user: JwtPayload,
+    @Param('shortId') shortId: string,
+  ): Promise<MediaUrlResponseDto> {
+    return this.videosService.getPlaybackUrl(user.sub, shortId);
+  }
+
+  @Get(':shortId/download-url')
+  @ApiOperation({
+    summary: 'Get a download URL',
+    description:
+      'Presigned URL (1 h TTL) whose response forces a download (`Content-Disposition: attachment`, named after the title). Only for `ready` videos.',
+  })
+  @ApiShortIdParam()
+  @ApiResponse({
+    status: 200,
+    description: 'Presigned download URL',
+    type: MediaUrlResponseDto,
+  })
+  @ApiError(401, 'Missing or invalid access token')
+  @ApiError(404, 'VIDEO_NOT_FOUND')
+  @ApiError(409, 'VIDEO_NOT_READY: the video has not finished processing')
+  async getDownloadUrl(
+    @CurrentUser() user: JwtPayload,
+    @Param('shortId') shortId: string,
+  ): Promise<MediaUrlResponseDto> {
+    return this.videosService.getDownloadUrl(user.sub, shortId);
   }
 }

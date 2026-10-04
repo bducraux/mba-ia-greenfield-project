@@ -170,3 +170,25 @@ Content-Type: {{contentType}}
     { "part_number": 1, "etag": "<ETag do PUT da part 1>" }
   ]
 }
+
+
+###
+# ─────────────────────────────────────────────
+# CONSULTA DO VÍDEO E URLs DE MÍDIA (dono)
+# ─────────────────────────────────────────────
+# Usa o @shortId capturado em 10. Playback e download exigem vídeo `ready`
+# (enquanto não estiver, respondem 409 VIDEO_NOT_READY).
+
+### 14. Consultar o vídeo — polling do processamento (processing_status, failure_reason, thumbnail_url)
+GET {{baseUrl}}/videos/{{shortId}}
+Authorization: Bearer {{accessToken}}
+
+
+### 15. URL de streaming (presignada, válida por 4 h; aceita Range no <video src>)
+GET {{baseUrl}}/videos/{{shortId}}/playback-url
+Authorization: Bearer {{accessToken}}
+
+
+### 16. URL de download (presignada, válida por 1 h; força Content-Disposition: attachment)
+GET {{baseUrl}}/videos/{{shortId}}/download-url
+Authorization: Bearer {{accessToken}}

@@ -1,7 +1,7 @@
 # phase-03-upload-processing — Progress
 
 **Status:** in_progress
-**SIs:** 9/15 completed
+**SIs:** 10/15 completed
 
 ### SI-03.1 — Infra: Redis + configuração raiz da fila
 - **Status:** completed
@@ -103,9 +103,14 @@
   - `api.http` gained a "UPLOAD DE VÍDEO" section (requests 10–13, with `@name initiateUpload` capturing `short_id`).
 
 ### SI-03.10 — VideosController: consulta do vídeo e URLs de mídia
-- **Status:** pending
-- **Tests:** —
-- **Observations:** none
+- **Status:** completed
+- **Tests:** 6 passing (test/videos-media.e2e-spec.ts, spec-derived from `specs/videos-media.plan.md`; the SI's inline Tests section is empty). Re-ran test/videos-upload.e2e-spec.ts because the same controller changed: 9 passing. tsc and eslint clean; queue confirmed unpaused after the run.
+- **Observations:**
+  - The E2E setup departs from the spec's `Setup:` in the same three ways as SI-03.9: no `publicEndpoint` override (`storageHttpRequest` is used instead), no `obliterate` (pause/resume plus removal of own jobs only), and no bucket wipe (only the suite's own uploads/objects are cleaned). The OpenAPI scenario uses `buildSwaggerDocument(app)`, so `ApiErrorEnvelope` is registered.
+  - The `ready` state comes from `VideoLifecycleService.markReady` (as the spec says), called after a real upload + complete, with fixed metadata and a `thumbnail_object_key` that has no object behind it. No thumbnail object is created, so the thumbnails bucket needs no cleanup.
+  - `GET :shortId` delegates to `findOwnedByShortId` + `toResponse`, as the SI says (no new service method). The three handlers reuse the `ApiError` / `ApiShortIdParam` helpers from SI-03.9. `MediaUrlResponseDto implements MediaUrl`.
+  - The "unknown but well-formed" 404 case uses `AAAAAAAAAAA`. In theory it could collide with a generated id; in practice the chance is negligible, and `cleanAllTables` runs before each test.
+  - `openapi.json` was regenerated (additions only: 3 operations + `MediaUrlResponseDto`). `api.http` gained requests 14–16, which reuse `@shortId` from request 10.
 
 ### SI-03.11 — MediaProbeService: ffprobe, gate de compatibilidade e thumbnail via ffmpeg
 - **Status:** pending
