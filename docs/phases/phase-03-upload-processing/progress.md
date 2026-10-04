@@ -1,7 +1,7 @@
 # phase-03-upload-processing — Progress
 
 **Status:** in_progress
-**SIs:** 6/15 completed
+**SIs:** 7/15 completed
 
 ### SI-03.1 — Infra: Redis + configuração raiz da fila
 - **Status:** completed
@@ -72,9 +72,14 @@
   - The test runner showed the pg warning "Calling client.query() when the client is already executing a query is deprecated". It already appears when running the TypeORM CLI (seen in SI-03.4), so it comes from TypeORM/pg internals and not from this SI's code. It will matter when pg is upgraded to v9.
 
 ### SI-03.7 — Sessão de upload: URLs de parts, parts enviadas e complete (enfileirar → processing)
-- **Status:** pending
-- **Tests:** —
-- **Observations:** none
+- **Status:** completed
+- **Tests:** 65 passing (video-lifecycle.service.integration-spec, videos.service.spec, videos.service.integration-spec, videos.module.spec); tsc + eslint of touched files clean. 1 fix attempt: the "duplicated part" unit case had wrong test data (`ALL_PARTS` is ordered 3,1,2, so `slice(0,2)` plus part 2 was a complete set); the service logic was correct.
+- **Observations:**
+  - `VideoLifecycleService` uses `repository.update({ id, processing_status: In(from) }, changes)` and returns `affected > 0`. TypeORM's `update()` also bumps `updated_at`. `markReady` sets `processed_at` via `() => 'CURRENT_TIMESTAMP'` and takes a typed `ProcessedVideoMetadata`. It is provided and exported by `VideosModule`, so the worker (SI-03.12) can import it.
+  - `completeUpload` step 3 always runs its own `HeadObject` after assembly, including after the `NoSuchUpload` fallback, which already did a `HeadObject` to decide between continuing and 410. That costs one extra HEAD on the rare retry path in exchange for a single linear size-check path.
+  - Part-set validation for complete (`length === part_count`, unique, every number in 1..`part_count`) runs before any storage call. `signPartUrls` deduplicates and sorts the requested numbers; uniqueness and the 1–160 bounds are DTO concerns (SI-03.9), and the service only enforces `≤ part_count` (422).
+  - The `VideosService` integration spec pauses the real `video-processing` queue in `beforeAll` and resumes it in `afterAll` (same approach as SI-03.5). It removes only the jobs of its own video ids. In `afterAll` it aborts open uploads, ignoring `NoSuchUpload` for uploads already completed or aborted, and deletes the assembled objects. After the run the queue was confirmed unpaused with an empty wait list.
+  - AC "complete with enqueue failing → 503, video stays `uploading`, retry after Redis is back → `processing` with one job": the 503 / no-`markProcessing` half is covered by the unit spec. The retry half rests on the `NoSuchUpload` → `HeadObject` fallback (unit) plus `jobId` idempotency (SI-03.5 integration). No integration test stops Redis mid-suite.
 
 ### SI-03.8 — URLs de mídia: streaming e download
 - **Status:** pending

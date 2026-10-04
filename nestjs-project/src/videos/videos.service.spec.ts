@@ -4,12 +4,25 @@ import { QueryFailedError } from 'typeorm';
 import { ChannelsService } from '../channels/channels.service';
 import type { Channel } from '../channels/entities/channel.entity';
 import {
+  InvalidUploadPartsException,
+  ProcessingQueueUnavailableException,
   UnsupportedVideoFormatException,
+  UploadNotInProgressException,
+  UploadSessionExpiredException,
   VideoNotFoundException,
+  VideoSizeMismatchException,
   VideoTooLargeException,
 } from '../common/exceptions/domain.exception';
+import {
+  StorageInvalidPartsError,
+  StorageObjectNotFoundError,
+  StorageUploadNotFoundError,
+} from '../storage/storage.errors';
 import { StorageService } from '../storage/storage.service';
+import { QueueUnavailableError } from '../video-processing/video-processing.errors';
+import { VideoProcessingProducer } from '../video-processing/video-processing.producer';
 import { Video } from './entities/video.entity';
+import { VideoLifecycleService } from './video-lifecycle.service';
 import { VideosService } from './videos.service';
 
 const USER_ID = 'user-1';
@@ -45,19 +58,32 @@ function persisted(partial: Partial<Video>): Video {
 
 describe('VideosService', () => {
   let service: VideosService;
-  let repo: { create: jest.Mock; save: jest.Mock; findOne: jest.Mock };
+  let repo: {
+    create: jest.Mock;
+    save: jest.Mock;
+    findOne: jest.Mock;
+    findOneByOrFail: jest.Mock;
+  };
   let storage: {
     createMultipartUpload: jest.Mock<Promise<string>, [string, string]>;
     abortMultipartUpload: jest.Mock;
     buildPublicObjectUrl: jest.Mock;
+    presignUploadPart: jest.Mock;
+    listParts: jest.Mock;
+    completeMultipartUpload: jest.Mock;
+    headObject: jest.Mock;
+    deleteObject: jest.Mock;
   };
   let channels: { findByUserId: jest.Mock };
+  let lifecycle: { markProcessing: jest.Mock; markUploadRejected: jest.Mock };
+  let producer: { enqueue: jest.Mock };
 
   beforeEach(async () => {
     repo = {
       create: jest.fn((data: Partial<Video>) => data),
       save: jest.fn((data: Partial<Video>) => Promise.resolve(persisted(data))),
       findOne: jest.fn(),
+      findOneByOrFail: jest.fn(),
     };
     storage = {
       createMultipartUpload: jest
@@ -67,8 +93,21 @@ describe('VideosService', () => {
       buildPublicObjectUrl: jest.fn(
         (bucket: string, key: string) => `http://cdn/${bucket}/${key}`,
       ),
+      presignUploadPart: jest.fn(
+        (_key: string, _uploadId: string, partNumber: number) =>
+          Promise.resolve(`http://signed/part/${partNumber}`),
+      ),
+      listParts: jest.fn(),
+      completeMultipartUpload: jest.fn().mockResolvedValue(undefined),
+      headObject: jest.fn(),
+      deleteObject: jest.fn().mockResolvedValue(undefined),
     };
     channels = { findByUserId: jest.fn().mockResolvedValue(CHANNEL) };
+    lifecycle = {
+      markProcessing: jest.fn().mockResolvedValue(true),
+      markUploadRejected: jest.fn().mockResolvedValue(true),
+    };
+    producer = { enqueue: jest.fn().mockResolvedValue(undefined) };
 
     const module = await Test.createTestingModule({
       providers: [
@@ -76,6 +115,8 @@ describe('VideosService', () => {
         { provide: getRepositoryToken(Video), useValue: repo },
         { provide: StorageService, useValue: storage },
         { provide: ChannelsService, useValue: channels },
+        { provide: VideoLifecycleService, useValue: lifecycle },
+        { provide: VideoProcessingProducer, useValue: producer },
       ],
     }).compile();
 
@@ -331,6 +372,289 @@ describe('VideosService', () => {
 
       expect(response.processed_at).toBe('2026-10-04T13:00:00.000Z');
       expect(response.created_at).toBe('2026-10-04T12:00:00.000Z');
+    });
+  });
+
+  describe('upload session', () => {
+    const PART_SIZE = 67108864;
+    // 3 parts: two full + a partial last part.
+    const SIZE = PART_SIZE * 2 + 1000;
+
+    function ownedVideo(partial: Partial<Video> = {}): Video {
+      return persisted({
+        short_id: VALID_SHORT_ID,
+        channel_id: CHANNEL.id,
+        original_object_key: `${VALID_SHORT_ID}/source.mp4`,
+        upload_id: 'upload-1',
+        size_bytes: SIZE,
+        mime_type: 'video/mp4',
+        title: 'clip',
+        ...partial,
+      });
+    }
+
+    const ALL_PARTS = [
+      { part_number: 3, etag: '"c"' },
+      { part_number: 1, etag: '"a"' },
+      { part_number: 2, etag: '"b"' },
+    ];
+
+    describe('signPartUrls', () => {
+      it('presigns the requested parts in order with a 1h TTL', async () => {
+        repo.findOne.mockResolvedValue(ownedVideo());
+        const before = Date.now();
+
+        const result = await service.signPartUrls(
+          USER_ID,
+          VALID_SHORT_ID,
+          [3, 1],
+        );
+
+        expect(result.parts).toEqual([
+          { part_number: 1, url: 'http://signed/part/1' },
+          { part_number: 3, url: 'http://signed/part/3' },
+        ]);
+        expect(storage.presignUploadPart).toHaveBeenCalledWith(
+          `${VALID_SHORT_ID}/source.mp4`,
+          'upload-1',
+          1,
+          3600,
+        );
+        const expiresAt = Date.parse(result.expires_at);
+        expect(expiresAt).toBeGreaterThanOrEqual(before + 3600_000);
+        expect(expiresAt).toBeLessThanOrEqual(Date.now() + 3600_000);
+      });
+
+      it('rejects a part_number above part_count', async () => {
+        repo.findOne.mockResolvedValue(ownedVideo());
+
+        await expect(
+          service.signPartUrls(USER_ID, VALID_SHORT_ID, [1, 4]),
+        ).rejects.toBeInstanceOf(InvalidUploadPartsException);
+        expect(storage.presignUploadPart).not.toHaveBeenCalled();
+      });
+
+      it('rejects a video that is not uploading', async () => {
+        repo.findOne.mockResolvedValue(
+          ownedVideo({ processing_status: 'processing' }),
+        );
+
+        await expect(
+          service.signPartUrls(USER_ID, VALID_SHORT_ID, [1]),
+        ).rejects.toBeInstanceOf(UploadNotInProgressException);
+      });
+    });
+
+    describe('listUploadedParts', () => {
+      it('maps storage parts ordered by part number', async () => {
+        repo.findOne.mockResolvedValue(ownedVideo());
+        storage.listParts.mockResolvedValue([
+          { partNumber: 2, etag: '"b"', size: PART_SIZE },
+          { partNumber: 1, etag: '"a"', size: PART_SIZE },
+        ]);
+
+        await expect(
+          service.listUploadedParts(USER_ID, VALID_SHORT_ID),
+        ).resolves.toEqual({
+          part_size: PART_SIZE,
+          part_count: 3,
+          parts: [
+            { part_number: 1, etag: '"a"', size: PART_SIZE },
+            { part_number: 2, etag: '"b"', size: PART_SIZE },
+          ],
+        });
+      });
+
+      it('maps an aborted upload to UploadSessionExpiredException', async () => {
+        repo.findOne.mockResolvedValue(ownedVideo());
+        storage.listParts.mockRejectedValue(
+          new StorageUploadNotFoundError('gone'),
+        );
+
+        await expect(
+          service.listUploadedParts(USER_ID, VALID_SHORT_ID),
+        ).rejects.toBeInstanceOf(UploadSessionExpiredException);
+      });
+
+      it('rejects a video that is not uploading', async () => {
+        repo.findOne.mockResolvedValue(
+          ownedVideo({ processing_status: 'failed' }),
+        );
+
+        await expect(
+          service.listUploadedParts(USER_ID, VALID_SHORT_ID),
+        ).rejects.toBeInstanceOf(UploadNotInProgressException);
+        expect(storage.listParts).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('completeUpload', () => {
+      beforeEach(() => {
+        repo.findOne.mockResolvedValue(ownedVideo());
+        storage.headObject.mockResolvedValue({ contentLength: SIZE });
+        repo.findOneByOrFail.mockResolvedValue(
+          ownedVideo({ processing_status: 'processing' }),
+        );
+      });
+
+      it('assembles sorted parts, enqueues, then marks processing', async () => {
+        const order: string[] = [];
+        producer.enqueue.mockImplementation(() => {
+          order.push('enqueue');
+          return Promise.resolve();
+        });
+        lifecycle.markProcessing.mockImplementation(() => {
+          order.push('markProcessing');
+          return Promise.resolve(true);
+        });
+
+        const result = await service.completeUpload(
+          USER_ID,
+          VALID_SHORT_ID,
+          ALL_PARTS,
+        );
+
+        expect(storage.completeMultipartUpload).toHaveBeenCalledWith(
+          `${VALID_SHORT_ID}/source.mp4`,
+          'upload-1',
+          [
+            { partNumber: 1, etag: '"a"' },
+            { partNumber: 2, etag: '"b"' },
+            { partNumber: 3, etag: '"c"' },
+          ],
+        );
+        expect(producer.enqueue).toHaveBeenCalledWith('video-1');
+        expect(order).toEqual(['enqueue', 'markProcessing']);
+        expect(result.processing_status).toBe('processing');
+      });
+
+      it('maps QueueUnavailableError to 503 and never marks processing', async () => {
+        producer.enqueue.mockRejectedValue(new QueueUnavailableError('down'));
+
+        await expect(
+          service.completeUpload(USER_ID, VALID_SHORT_ID, ALL_PARTS),
+        ).rejects.toBeInstanceOf(ProcessingQueueUnavailableException);
+        expect(lifecycle.markProcessing).not.toHaveBeenCalled();
+        expect(storage.deleteObject).not.toHaveBeenCalled();
+      });
+
+      it('rejects an assembled object above 10 GiB: delete, mark rejected, no enqueue', async () => {
+        storage.headObject.mockResolvedValue({ contentLength: 10737418241 });
+
+        await expect(
+          service.completeUpload(USER_ID, VALID_SHORT_ID, ALL_PARTS),
+        ).rejects.toBeInstanceOf(VideoTooLargeException);
+        expect(storage.deleteObject).toHaveBeenCalledWith(
+          'videos',
+          `${VALID_SHORT_ID}/source.mp4`,
+        );
+        expect(lifecycle.markUploadRejected).toHaveBeenCalledWith('video-1');
+        expect(producer.enqueue).not.toHaveBeenCalled();
+        expect(lifecycle.markProcessing).not.toHaveBeenCalled();
+      });
+
+      it('rejects an assembled object whose size differs from the declared size', async () => {
+        storage.headObject.mockResolvedValue({ contentLength: SIZE - 1 });
+
+        await expect(
+          service.completeUpload(USER_ID, VALID_SHORT_ID, ALL_PARTS),
+        ).rejects.toBeInstanceOf(VideoSizeMismatchException);
+        expect(storage.deleteObject).toHaveBeenCalled();
+        expect(lifecycle.markUploadRejected).toHaveBeenCalledWith('video-1');
+        expect(producer.enqueue).not.toHaveBeenCalled();
+      });
+
+      it('continues to enqueue when NoSuchUpload but the object was already assembled', async () => {
+        storage.completeMultipartUpload.mockRejectedValue(
+          new StorageUploadNotFoundError('gone'),
+        );
+
+        await service.completeUpload(USER_ID, VALID_SHORT_ID, ALL_PARTS);
+
+        expect(producer.enqueue).toHaveBeenCalledWith('video-1');
+        expect(lifecycle.markProcessing).toHaveBeenCalledWith('video-1');
+      });
+
+      it('maps NoSuchUpload without an assembled object to 410', async () => {
+        storage.completeMultipartUpload.mockRejectedValue(
+          new StorageUploadNotFoundError('gone'),
+        );
+        storage.headObject.mockRejectedValue(
+          new StorageObjectNotFoundError('missing'),
+        );
+
+        await expect(
+          service.completeUpload(USER_ID, VALID_SHORT_ID, ALL_PARTS),
+        ).rejects.toBeInstanceOf(UploadSessionExpiredException);
+        expect(producer.enqueue).not.toHaveBeenCalled();
+      });
+
+      it('maps storage-rejected parts to INVALID_UPLOAD_PARTS', async () => {
+        storage.completeMultipartUpload.mockRejectedValue(
+          new StorageInvalidPartsError('bad etag'),
+        );
+
+        await expect(
+          service.completeUpload(USER_ID, VALID_SHORT_ID, ALL_PARTS),
+        ).rejects.toBeInstanceOf(InvalidUploadPartsException);
+        expect(producer.enqueue).not.toHaveBeenCalled();
+      });
+
+      it.each(['processing', 'ready'] as const)(
+        'replays a %s video with no side effects',
+        async (status) => {
+          repo.findOne.mockResolvedValue(
+            ownedVideo({ processing_status: status }),
+          );
+
+          const result = await service.completeUpload(
+            USER_ID,
+            VALID_SHORT_ID,
+            ALL_PARTS,
+          );
+
+          expect(result.processing_status).toBe(status);
+          expect(storage.completeMultipartUpload).not.toHaveBeenCalled();
+          expect(producer.enqueue).not.toHaveBeenCalled();
+          expect(lifecycle.markProcessing).not.toHaveBeenCalled();
+        },
+      );
+
+      it('rejects a failed video with UPLOAD_NOT_IN_PROGRESS', async () => {
+        repo.findOne.mockResolvedValue(
+          ownedVideo({
+            processing_status: 'failed',
+            failure_reason: 'UPLOAD_REJECTED',
+          }),
+        );
+
+        await expect(
+          service.completeUpload(USER_ID, VALID_SHORT_ID, ALL_PARTS),
+        ).rejects.toBeInstanceOf(UploadNotInProgressException);
+        expect(storage.completeMultipartUpload).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        ['a missing part', ALL_PARTS.slice(0, 2)],
+        [
+          'a duplicated part',
+          [
+            { part_number: 1, etag: '"a"' },
+            { part_number: 2, etag: '"b"' },
+            { part_number: 2, etag: '"b"' },
+          ],
+        ],
+        [
+          'a part above part_count',
+          [...ALL_PARTS.slice(0, 2), { part_number: 4, etag: '"d"' }],
+        ],
+        ['an extra part', [...ALL_PARTS, { part_number: 4, etag: '"d"' }]],
+      ])('rejects a part set with %s', async (_label, parts) => {
+        await expect(
+          service.completeUpload(USER_ID, VALID_SHORT_ID, parts),
+        ).rejects.toBeInstanceOf(InvalidUploadPartsException);
+        expect(storage.completeMultipartUpload).not.toHaveBeenCalled();
+      });
     });
   });
 });
