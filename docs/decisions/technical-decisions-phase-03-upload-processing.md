@@ -91,6 +91,7 @@ _Subprojects in scope:_
 
 **Revisions:**
 - 2026-10-03 — Initiate payload fixed as `fileName`, `mimeType`, `size` (no title field). The draft row is created at initiate with `title` = file name without extension (truncated to 100 chars), `description` null, `processing_status` = `uploading`, `publication_status` = `draft`, `short_id` (TD-10), `original_object_key`, `mime_type`, `size_bytes`, `upload_id`; owner is the authenticated user's channel (`channel_id` FK → `channels`, one channel per user per phase-02-auth/TD-10). Rationale: AMB-3 resolution — title/description editing belongs to Phase 04.
+- 2026-10-04 — Complete-time `HeadObject` check rejects and fails the upload. After `CompleteMultipartUpload`, the API runs `HeadObject` on the assembled object. If `ContentLength` > 10 GiB, it responds 422 `VIDEO_TOO_LARGE`. If `ContentLength` differs from the `size` declared at initiate, it responds 422 `VIDEO_SIZE_MISMATCH`. Both use the error envelope of phase-02-auth/TD-07. On either rejection the API deletes the object from storage and marks the video `processing_status = failed` with `failure_reason = UPLOAD_REJECTED` (transition `uploading → failed`, see TD-11), and no processing job is enqueued. Rationale: AMB-4 resolution — reject and mark failed.
 
 ---
 
@@ -392,6 +393,7 @@ _Subprojects in scope:_
 
 **Revisions:**
 - 2026-10-03 — `processing_status` values: `uploading | processing | ready | failed`. Transitions: `uploading → processing` on multipart complete (job enqueued), `processing → ready` (ffprobe ok, metadata and thumbnail stored), `processing → failed`. Nullable `failure_reason` code: `UNSUPPORTED_FORMAT` (ffprobe rejects container/codec), `PROCESSING_FAILED` (job exhausts BullMQ retries — 3 attempts, exponential backoff), `SOURCE_MISSING` (object absent when processing). The owner sees `processing_status` + `failure_reason` on the video GET. A `failed` video's object is kept (diagnosis; cleanup is a future task). Abandoned uploads stay `uploading`; bucket lifecycle aborts incomplete multipart after 24h; orphan-draft cleanup and the reconciliation sweep are follow-ups outside Phase 03. `publication_status` is `draft` for every Phase 03 video. Worker-filled fields: `duration_seconds`, `width`, `height`, `video_codec`, `audio_codec`, `thumbnail_object_key`, `processed_at`. Rationale: AMB-2/AMB-3 resolution.
+- 2026-10-04 — New transition `uploading → failed`, set by the complete endpoint when the `HeadObject` check rejects the assembled object (size > 10 GiB → 422 `VIDEO_TOO_LARGE`, size ≠ declared `size` → 422 `VIDEO_SIZE_MISMATCH`; see TD-02). New `failure_reason` code `UPLOAD_REJECTED`. The full set is now `UNSUPPORTED_FORMAT`, `PROCESSING_FAILED`, `SOURCE_MISSING`, `UPLOAD_REJECTED`. Unlike the other `failed` cases, the rejected object is deleted from storage, and no job is enqueued. Rationale: AMB-4 resolution — reject and mark failed.
 
 ---
 
@@ -525,6 +527,9 @@ _Subprojects in scope:_
 **Libraries:** @aws-sdk/client-s3
 
 **Note:** Adds `STORAGE_THUMBNAILS_BUCKET` to the TD-04 environment keys (to be recorded as a TD-04 Revision by `/plan-resolve 03`). Chosen because the anonymous-read grant then applies to a whole bucket — the one policy shape SeaweedFS is confirmed to honor — instead of depending on prefix-scoped policies that are unconfirmed in the emulator.
+
+**Revisions:**
+- 2026-10-04 — The `next/image` `remotePatterns` parameter (allowing the public storage host) is removed from this phase. In Phase 03 the backend only returns the public thumbnail URL in the video DTO. The FE `remotePatterns` configuration is a recorded follow-up for the Phase 03 frontend slice, the same treatment as IC-5. Rationale: Phase 03 delivers backend only (UI deferred), consistent with TD-03/TD-12/TD-13.
 
 ---
 

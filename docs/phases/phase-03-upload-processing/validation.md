@@ -2,7 +2,7 @@
 kind: phase
 name: phase-03-upload-processing
 status: dirty
-issue_count: 2
+issue_count: 0
 sources_mtime:
   docs/phases/phase-03-upload-processing/context.md: "2026-10-04T10:34:22-03:00"
   docs/decisions/technical-decisions-phase-03-upload-processing.md: "2026-10-04T10:31:48-03:00"
@@ -32,8 +32,9 @@ issues:
     summary: "TD-14 accepts MOV, but TD-06 playback contract is MP4/WebM original"
     resolved_by: phase-03-upload-processing/TD-14
   - id: IC-7
-    status: open
+    status: resolved
     summary: "TD-15 prescribes FE next/image remotePatterns in a backend-only phase"
+    resolved_by: phase-03-upload-processing/TD-15
   - id: AMB-1
     status: resolved
     summary: "Who may stream/download a video in Phase 03 (owner only vs anyone)?"
@@ -47,8 +48,9 @@ issues:
     summary: "Draft pre-registration: required fields, defaults and owner entity"
     resolved_by: clarification
   - id: AMB-4
-    status: open
+    status: resolved
     summary: "Outcome of complete-time HeadObject check failure is undefined"
+    resolved_by: phase-03-upload-processing/TD-02, phase-03-upload-processing/TD-11
   - id: MD-1
     status: resolved
     summary: "No TD fixes accepted input formats / MIME allowlist at initiate"
@@ -82,11 +84,11 @@ advisories: []
 
 ### Inconsistencies
 
-- **IC-7** — TD-03, TD-12 and TD-13 all fix Phase 03 as "backend only, UI deferred to Phase 03 FE slice", and IC-5 already removed an FE-side parameter from TD-14 for the same reason. TD-15's Recommendation still prescribes FE work: "The FE adds the public storage host to `next/image` `remotePatterns`." TD-15 has no Revision addressing it, and the regenerated context still carries the sentence. `/plan-build` would either emit an FE step in a backend-only phase or drop the parameter silently. Explicit choice: (a) append a Revision to TD-15 moving the `remotePatterns` parameter to a recorded follow-up for the Phase 03 frontend slice (same treatment as IC-5); (b) keep it and add `next-frontend` as an affected subproject of this phase (contradicts TD-03/TD-12/TD-13).
+_None._
 
 ### Ambiguities
 
-- **AMB-4** — TD-02 says the 10 GiB limit is "re-checked at complete via `HeadObject`". The TD-11 revision defines only `uploading → processing` on multipart complete, and its `failure_reason` set (`UNSUPPORTED_FORMAT`, `PROCESSING_FAILED`, `SOURCE_MISSING`) has no code for a complete-time violation. Neither TD-02 nor TD-11 gained a Revision on this point, and TD-16 covers only bucket configuration. Undefined: what the complete endpoint does when the assembled object exceeds 10 GiB or differs from the declared `size`. Open points are the HTTP status and domain code, whether the object is deleted, and the row's resulting state (stays `uploading`, a new `uploading → failed` transition with a new reason code, or row deleted). Explicit choice: clarify the complete-time rejection behavior and record it as a Revision of TD-02 / TD-11.
+_None._
 
 ### Missing Decisions
 
@@ -125,3 +127,5 @@ _None._ _(UI Inventory deferred — check not applicable.)_
 - **OQ-2** _(resolved_by phase-03-upload-processing/TD-12)_ — TD-12 pending — Processing Status Propagation to the Frontend. Decision filled: out of scope for Phase 03 (backend only, UI deferred); revisit in the Phase 03 frontend slice. Backend contract for status is the owner GET (see AMB-2).
 - **OQ-3** _(resolved_by phase-03-upload-processing/TD-13)_ — TD-13 pending — Frontend Test Strategy for Browser → Storage. Decision filled: out of scope for Phase 03 (backend only, UI deferred); revisit in the Phase 03 frontend slice.
 - **MD-3** _(resolved_by phase-03-upload-processing/TD-16)_ — No TD on who provisions buckets, CORS, lifecycle and public-read. TD-16 (decided A) adds a one-shot `storage-init` container (`amazon/aws-cli`, idempotent script) for dev/test. It creates both buckets, sets video-bucket CORS (`STORAGE_CORS_ORIGIN`, PUT/GET/HEAD, exposes `ETag`) and a 1-day abort-incomplete-multipart lifecycle rule, and gives the thumbnails bucket anonymous `Read` only. API credentials are object-level only. The prod contract is documented in `docs/`, and IaC is deferred until a deploy phase exists. It is consistent with TD-02 (24h abort), TD-04 (CORS origin) and TD-15 (two buckets, no `List`).
+- **IC-7** _(resolved_by phase-03-upload-processing/TD-15)_ — TD-15 prescribes FE next/image remotePatterns in a backend-only phase. Option (a): Revision appended to TD-15. The `next/image` `remotePatterns` configuration for the public storage host leaves this phase and becomes a recorded follow-up for the Phase 03 frontend slice, the same treatment as IC-5. In Phase 03 the backend only returns the public thumbnail URL.
+- **AMB-4** _(resolved_by phase-03-upload-processing/TD-02, phase-03-upload-processing/TD-11)_ — Outcome of the complete-time HeadObject check failure. The upload is rejected and marked failed. If `HeadObject` shows size > 10 GiB, or a size different from the `size` declared at initiate, complete responds 422 with `VIDEO_TOO_LARGE` or `VIDEO_SIZE_MISMATCH` (error envelope of phase-02-auth/TD-07). It then deletes the object from storage and sets `processing_status = failed` with `failure_reason = UPLOAD_REJECTED` (new transition `uploading → failed`), and no job is enqueued. Recorded as Revisions in TD-02 (complete behavior) and TD-11 (new transition and reason code).

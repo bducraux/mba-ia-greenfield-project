@@ -3,8 +3,8 @@ kind: phase
 name: phase-03-upload-processing
 sources_mtime:
   docs/project-plan.md: "2026-10-03T17:53:36-03:00"
-  docs/decisions/technical-decisions-phase-03-upload-processing.md: "2026-10-04T10:31:48-03:00"
-  docs/phases/phase-03-upload-processing/library-refs.md: "2026-10-03T20:31:49-03:00"
+  docs/decisions/technical-decisions-phase-03-upload-processing.md: "2026-10-04T10:36:44-03:00"
+  docs/phases/phase-03-upload-processing/library-refs.md: "2026-10-04T10:38:40-03:00"
   docs/decisions/technical-decisions-openapi-docs-nestjs.md: "2026-10-03T18:04:32-03:00"
   docs/decisions/technical-decisions-next-frontend-config-base.md: "2026-10-03T18:04:32-03:00"
   docs/phases/phase-01-configuracao-base/context.md: "2026-10-03T18:04:32-03:00"
@@ -49,7 +49,7 @@ sources_mtime:
 |-----|--------|-------|-------|--------|----------|-----------|
 | phase-03-upload-processing/TD-01 | phase | Backend | Object Storage Backend (dev/test vs production) | decided | A (S3 API everywhere, SeaweedFS in dev/test) | @aws-sdk/client-s3 |
 | phase-03-upload-processing/TD-02 | phase | Cross-layer | Large-File Upload Protocol (10GB, resumable) | decided | A (S3 Multipart Upload, presigned part URLs) | @aws-sdk/client-s3, @aws-sdk/s3-request-presigner |
-|     └─ Last revision: 2026-10-03 — Initiate payload fixed as `fileName`, `mimeType`, `size` (no title field). The… | | | | | | |
+|     └─ Last revision: 2026-10-04 — Complete-time `HeadObject` check rejects and fails the upload. After `CompleteMu… | | | | | | |
 | phase-03-upload-processing/TD-03 | phase | Frontend | Frontend Upload Client | decided | Out of scope (backend only, UI deferred) | — |
 | phase-03-upload-processing/TD-04 | phase | Cross-layer | Storage Endpoint Topology (internal vs browser-facing URLs) | decided | A (Two endpoints, internal + public, bucket CORS) | @aws-sdk/client-s3, @aws-sdk/s3-request-presigner |
 |     └─ Last revision: 2026-10-03 — Canonical key list extended with `STORAGE_THUMBNAILS_BUCKET` (public-read th… | | | | | | |
@@ -61,12 +61,13 @@ sources_mtime:
 | phase-03-upload-processing/TD-09 | phase | Backend | FFmpeg Integration and Source-File Access | decided | A (Spawn ffprobe/ffmpeg, presigned internal GET over Range) | — |
 | phase-03-upload-processing/TD-10 | phase | Cross-layer | Unique Short Video Identifier (public URL) | decided | A (Random 11-char base64url + unique index + retry) | — |
 | phase-03-upload-processing/TD-11 | phase | Cross-layer | Video Lifecycle State Model | decided | B (Two fields: processing_status + publication_status) | — |
-|     └─ Last revision: 2026-10-03 — `processing_status` values: `uploading \| processing \| ready \| failed`. Trans… | | | | | | |
+|     └─ Last revision: 2026-10-04 — New transition `uploading → failed`, set by the complete endpoint when the `He… | | | | | | |
 | phase-03-upload-processing/TD-12 | phase | Cross-layer | Processing Status Propagation to the Frontend | decided | Out of scope (backend only, UI deferred) | — |
 | phase-03-upload-processing/TD-13 | phase | Frontend | Frontend Test Strategy for Browser → Storage Traffic | decided | Out of scope (backend only, UI deferred) | — |
 | phase-03-upload-processing/TD-14 | phase | Cross-layer | Input Format Validation Before Upload (allowlist + ffprobe) | decided | A (Allowlist at initiate + ffprobe authoritative gate) | — |
 |     └─ Last revision: 2026-10-03 — MOV removed from the container allowlist. Final allowlist: `video/mp4` (exte… | | | | | | |
 | phase-03-upload-processing/TD-15 | phase | Cross-layer | Storage Bucket Topology for Public Thumbnails and Private V… | decided | B (Two buckets: private videos + public-read thumbnails) | @aws-sdk/client-s3 |
+|     └─ Last revision: 2026-10-04 — The `next/image` `remotePatterns` parameter (allowing the public storage host)… | | | | | | |
 | phase-03-upload-processing/TD-16 | phase | Backend | Storage Bucket Provisioning (creation, CORS, public-read, l… | decided | A (One-shot storage-init container for dev/test; IaC in prod, documented only) | — |
 
 _Source files:_
@@ -101,6 +102,7 @@ _Source files:_
 
 **Revisions:**
 - 2026-10-03 — Initiate payload fixed as `fileName`, `mimeType`, `size` (no title field). The draft row is created at initiate with `title` = file name without extension (truncated to 100 chars), `description` null, `processing_status` = `uploading`, `publication_status` = `draft`, `short_id` (TD-10), `original_object_key`, `mime_type`, `size_bytes`, `upload_id`; owner is the authenticated user's channel (`channel_id` FK → `channels`, one channel per user per phase-02-auth/TD-10). Rationale: AMB-3 resolution — title/description editing belongs to Phase 04.
+- 2026-10-04 — Complete-time `HeadObject` check rejects and fails the upload. After `CompleteMultipartUpload`, the API runs `HeadObject` on the assembled object. If `ContentLength` > 10 GiB, it responds 422 `VIDEO_TOO_LARGE`. If `ContentLength` differs from the `size` declared at initiate, it responds 422 `VIDEO_SIZE_MISMATCH`. Both use the error envelope of phase-02-auth/TD-07. On either rejection the API deletes the object from storage and marks the video `processing_status = failed` with `failure_reason = UPLOAD_REJECTED` (transition `uploading → failed`, see TD-11), and no processing job is enqueued. Rationale: AMB-4 resolution — reject and mark failed.
 
 ### phase-03-upload-processing/TD-03
 
@@ -155,6 +157,7 @@ _Source files:_
 
 **Revisions:**
 - 2026-10-03 — `processing_status` values: `uploading | processing | ready | failed`. Transitions: `uploading → processing` on multipart complete (job enqueued), `processing → ready` (ffprobe ok, metadata and thumbnail stored), `processing → failed`. Nullable `failure_reason` code: `UNSUPPORTED_FORMAT` (ffprobe rejects container/codec), `PROCESSING_FAILED` (job exhausts BullMQ retries — 3 attempts, exponential backoff), `SOURCE_MISSING` (object absent when processing). The owner sees `processing_status` + `failure_reason` on the video GET. A `failed` video's object is kept (diagnosis; cleanup is a future task). Abandoned uploads stay `uploading`; bucket lifecycle aborts incomplete multipart after 24h; orphan-draft cleanup and the reconciliation sweep are follow-ups outside Phase 03. `publication_status` is `draft` for every Phase 03 video. Worker-filled fields: `duration_seconds`, `width`, `height`, `video_codec`, `audio_codec`, `thumbnail_object_key`, `processed_at`. Rationale: AMB-2/AMB-3 resolution.
+- 2026-10-04 — New transition `uploading → failed`, set by the complete endpoint when the `HeadObject` check rejects the assembled object (size > 10 GiB → 422 `VIDEO_TOO_LARGE`, size ≠ declared `size` → 422 `VIDEO_SIZE_MISMATCH`; see TD-02). New `failure_reason` code `UPLOAD_REJECTED`. The full set is now `UNSUPPORTED_FORMAT`, `PROCESSING_FAILED`, `SOURCE_MISSING`, `UPLOAD_REJECTED`. Unlike the other `failed` cases, the rejected object is deleted from storage, and no job is enqueued. Rationale: AMB-4 resolution — reject and mark failed.
 
 ### phase-03-upload-processing/TD-12
 
@@ -179,6 +182,9 @@ _Source files:_
 
 **Recommendation:** it makes "videos are never public" a structural guarantee rather than a correctly written policy. It relies only on bucket-level public read, the one primitive that SeaweedFS (without the 2026-09 policy fix), AWS and Garage all support, so it keeps TD-01's fallback alive. It matches TD-05 C as decided. The price is one env key, recorded as a Revision of TD-04. Proposed parameters for `/plan-build`: new key `STORAGE_THUMBNAILS_BUCKET` (added to the TD-04 list). The DB stores only the thumbnail **object key**, and the API composes the URL at serialization time from `STORAGE_PUBLIC_ENDPOINT` + bucket + key (path-style per `STORAGE_FORCE_PATH_STYLE`), so changing the endpoint needs no data migration. Keys are versioned (`{shortId}/{random-or-hash}.jpg`), so a replaced thumbnail (Phase 04 custom upload) gets a new URL, and objects are written with `Cache-Control: public, max-age=31536000, immutable`. Anonymous access on the thumbnails bucket is `Read` only, with no `List`. The FE adds the public storage host to `next/image` `remotePatterns`.
 **Libraries:** @aws-sdk/client-s3
+
+**Revisions:**
+- 2026-10-04 — The `next/image` `remotePatterns` parameter (allowing the public storage host) is removed from this phase. In Phase 03 the backend only returns the public thumbnail URL in the video DTO. The FE `remotePatterns` configuration is a recorded follow-up for the Phase 03 frontend slice, the same treatment as IC-5. Rationale: Phase 03 delivers backend only (UI deferred), consistent with TD-03/TD-12/TD-13.
 
 ### phase-03-upload-processing/TD-16
 

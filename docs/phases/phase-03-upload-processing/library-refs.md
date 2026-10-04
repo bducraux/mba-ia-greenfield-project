@@ -17,7 +17,7 @@ libs:
     context7_id: "/taskforcesh/bullmq"
     fetched_at: "2026-10-03T20:31:20-03:00"
 sources_mtime:
-  docs/decisions/technical-decisions-phase-03-upload-processing.md: "2026-10-03T20:28:39-03:00"
+  docs/decisions/technical-decisions-phase-03-upload-processing.md: "2026-10-04T10:36:44-03:00"
 ---
 
 # Library References — Phase 03 / upload-processing
