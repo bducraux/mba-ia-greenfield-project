@@ -10,9 +10,9 @@ More info in the project overview: [docs/project-plan.md](docs/project-plan.md)
 
 This is a monorepo with two main areas:
 
-- `nestjs-project/` — Backend API (NestJS 11, TypeScript, Express). Contains modules for users, channels, videos, comments, etc.
+- `nestjs-project/` — Backend API and Video Worker (NestJS 11, TypeScript, Express). Contains modules for auth, users, channels, videos, storage, queue and video processing.
+- `next-frontend/` — Frontend (Next.js). See `next-frontend/CLAUDE.md`.
 - `docs/` — Project documentation, architecture diagrams, and planning.
-- `next-frontend/` (Next.js) — not yet initialized
 
 ## Architecture (C4 Container Diagram)
 
@@ -20,10 +20,10 @@ See `docs/diagrams/software-arch.mermaid` for the full diagram. Key containers:
 
 - **Frontend** (Next.js) → calls API via REST, streams from Object Storage
 - **API** (Nest.js) → business rules, auth, reads/writes DB, uploads to storage, publishes jobs to queue, sends emails
-- **Video Worker** (FFmpeg) → consumes jobs from queue, processes videos, updates DB and storage
+- **Video Worker** (Nest.js + FFmpeg) → same codebase as `nestjs-project`, entrypoint `src/worker.ts` (`WorkerModule`), Compose service `video-worker`; the only consumer of the queue. Probes uploads with `ffprobe`, extracts thumbnails with `ffmpeg`, updates DB and storage
 - **Database** (PostgreSQL) → users, channels, videos, comments, likes
-- **Object Storage** (S3/MinIO) → video files and thumbnails
-- **Message Queue** (TBD) → video processing job queue
+- **Object Storage** (S3 API) → S3 API in every environment: SeaweedFS in dev/test (Compose services `seaweedfs` + `storage-init`), any S3-compatible provider in production. Two buckets: a private videos bucket (`STORAGE_BUCKET`, presigned URLs only) and a public-read thumbnails bucket (`STORAGE_THUMBNAILS_BUCKET`). Production contract: [docs/storage-provisioning.md](docs/storage-provisioning.md)
+- **Message Queue** (BullMQ on Redis) → Compose service `redis`, queue `video-processing`; the API publishes one `process` job per completed upload
 - **Email Service** (SMTP) → account confirmation and password recovery
 
 ## Docker Networking
@@ -36,6 +36,15 @@ Inside a container, `localhost` refers to the container itself, not the host mac
 - **Wrong:** `DB_HOST=localhost`
 
 This applies to all environment variables, configuration files, and code that references service hosts.
+
+**Single exception — `STORAGE_PUBLIC_ENDPOINT`.** It is the only host meant for the **browser**, not for containers: presigned upload/playback/download URLs and public thumbnail URLs are built on it, so in dev it is `http://localhost:8333` (the `seaweedfs` port published on the host). Server-side storage calls always use `STORAGE_ENDPOINT=http://seaweedfs:8333`.
+
+## Videos (upload and processing)
+
+- **Upload:** the browser uploads the file straight to object storage with S3 multipart upload. The API (`/videos` endpoints, all authenticated) creates the video and the multipart upload, signs part URLs, lists uploaded parts and completes the upload. Request and response bodies use snake_case. The video is identified publicly by an 11-character `short_id`. Size limit: 10 GiB.
+- **Processing:** completing an upload enqueues a job on `video-processing`; the `video-worker` checks the file with `ffprobe` (container/codec allowlist), extracts a thumbnail with `ffmpeg` and marks the video `ready` or `failed` (with a `failure_reason`).
+- **Playback/download:** owner-only presigned GET URLs (`/videos/:shortId/playback-url`, `/videos/:shortId/download-url`) once the video is `ready`.
+- Endpoint list, commands, env vars and test setup: `nestjs-project/CLAUDE.md`. Decisions: `docs/decisions/technical-decisions-phase-03-upload-processing.md`.
 
 ## Working Principles
 

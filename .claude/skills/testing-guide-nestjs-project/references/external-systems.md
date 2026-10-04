@@ -39,36 +39,45 @@ How each external system is handled in tests. These strategies were confirmed wi
 
 ## Object Storage — Real S3 API (SeaweedFS in Docker)
 
-**Strategy:** The S3 API everywhere. Development and tests run against the SeaweedFS S3 gateway in `compose.yaml`; production points the same client at any S3-compatible provider. There is no local-filesystem adapter: multipart uploads, presigned URLs, HTTP Range reads and bucket policies are S3 semantics a filesystem cannot reproduce (see `docs/decisions/technical-decisions-phase-03-upload-processing.md`, TD-01 and TD-02).
+**Strategy:** The S3 API everywhere. Development and tests run against the SeaweedFS S3 gateway (the `seaweedfs` service in `compose.yaml`, buckets provisioned by the one-shot `storage-init` service); production points the same client at any S3-compatible provider (see `docs/storage-provisioning.md`). There is no local-filesystem adapter: multipart uploads, presigned URLs, HTTP Range reads and bucket policies are S3 semantics a filesystem cannot reproduce (see `docs/decisions/technical-decisions-phase-03-upload-processing.md`, TD-01 and TD-02).
 
 **Approach:**
-- Services talk to storage through the AWS SDK v3 S3 client, configured from `STORAGE_*` env vars (Compose service name as host, path-style addressing)
-- Integration and e2e tests use the real `storage` service — no mocking of the S3 client outside unit tests
-- Use a unique key prefix per test run (e.g., `test/<uuid>/`) and delete the objects it created in `afterAll`
-- Unit tests (`*.spec.ts`) mock the storage service class, never the network
+- Services talk to storage only through `StorageService` (`src/storage/storage.service.ts`, AWS SDK v3), configured from the `STORAGE_*` env vars: `STORAGE_ENDPOINT=http://seaweedfs:8333` (Compose service name) for server-side calls, path-style addressing
+- Integration and e2e tests use the real `seaweedfs` service — no mocking of the S3 client outside unit tests
+- Use a unique key prefix per test run and delete what the test created in `afterAll` (abort open multipart uploads, `deleteObject` for assembled objects and thumbnails). Never wipe a bucket: the dev and test environments share it
+- Unit tests (`*.spec.ts`) mock `StorageService`, never the network
 
-**Integration test:**
+**Presigned URLs inside the container — the public endpoint is NOT overridden.** Browser-facing URLs (part uploads, playback, download, thumbnails) are signed for `STORAGE_PUBLIC_ENDPOINT` (`http://localhost:8333`), which is not reachable from inside the `nestjs-api` container. Tests keep the real config and send those requests with `storageHttpRequest` (`src/test/storage.ts`): it opens the TCP connection to `STORAGE_ENDPOINT` but keeps the signed `Host` header, so the SigV4 signature stays valid. Do not use `fetch(url)` on a presigned URL in a test, and do not override `storageConfig.publicEndpoint` — that would stop testing the URLs the browser actually gets.
+
+**Integration test** (pattern from `src/storage/storage.service.integration-spec.ts`):
 ```typescript
-describe('StorageService (integration)', () => {
-  const prefix = `test/${randomUUID()}/`;
+const prefix = `it-${randomUUID()}`;
+const openUploads: Array<{ key: string; uploadId: string }> = [];
 
-  afterAll(async () => {
-    await storageService.deletePrefix(prefix);
+afterAll(async () => {
+  for (const { key, uploadId } of openUploads) {
+    await storage.abortMultipartUpload(key, uploadId).catch(() => undefined);
+    await storage.deleteObject('videos', key);
+  }
+  await module.close();
+});
+
+it('assembles an object from a presigned part URL', async () => {
+  const key = `${prefix}/source.mp4`;
+  const uploadId = await storage.createMultipartUpload(key, 'video/mp4');
+  openUploads.push({ key, uploadId });
+
+  const url = await storage.presignUploadPart(key, uploadId, 1, 600);
+  const put = await storageHttpRequest(url, {
+    method: 'PUT',
+    body: Buffer.from('content'),
   });
+  await storage.completeMultipartUpload(key, uploadId, [
+    { partNumber: 1, etag: put.headers.etag as string },
+  ]);
 
-  it('should complete a multipart upload through presigned part URLs', async () => {
-    const key = `${prefix}video.mp4`;
-    const { uploadId } = await storageService.createMultipartUpload(key, 'video/mp4');
-    const [url] = await storageService.presignUploadParts(key, uploadId, 1);
-
-    const res = await fetch(url, { method: 'PUT', body: Buffer.from('content') });
-    await storageService.completeMultipartUpload(key, uploadId, [
-      { PartNumber: 1, ETag: res.headers.get('etag')! },
-    ]);
-
-    const head = await storageService.headObject(key);
-    expect(head.ContentLength).toBe(7);
-  });
+  const head = await storage.headObject('videos', key);
+  expect(head.contentLength).toBe(7);
 });
 ```
 
@@ -76,38 +85,35 @@ describe('StorageService (integration)', () => {
 
 ## Message Queue — Real (Docker)
 
-**Strategy:** Real message broker in Docker — BullMQ on the `redis` Compose service (Phase 03, TD-07).
+**Strategy:** Real message broker in Docker — BullMQ on the `redis` Compose service, queue `video-processing` (Phase 03, TD-07).
 
 **Configuration:**
-- The `redis` service in `compose.yaml`; `REDIS_HOST` is the Compose service name
-- Test isolation: use dedicated test queues or clean queues between tests
-- For publisher tests: assert the job is enqueued with correct data
-- For consumer tests: submit a job and assert the processing outcome
+- The `redis` service in `compose.yaml`; `REDIS_HOST=redis` (Compose service name), `REDIS_PORT=6379`
+- The queue is shared with the dev environment, and the `video-worker` container consumes it whenever it is up. Never `drain`/`obliterate` it from a test
+- Producer tests (and e2e suites that must keep jobs from being consumed): `queue.pause()` in `beforeAll`, remove only the jobs the suite created (`queue.remove(videoId)` — the job id is the video id), `queue.resume()` in `afterAll`. If a run is killed between pause and resume, restore it with `docker compose exec redis redis-cli HDEL bull:video-processing:meta paused`
+- Consumer tests: build the module without starting a BullMQ Worker (`compile()` does not run `onModuleInit`) and call `process(job)` directly
+- Full pipeline e2e (`test/video-pipeline.e2e-spec.ts`): the queue stays running; the suite starts a `WorkerModule` context in the same process (`test/helpers/video-pipeline.ts`). The `video-worker` container may consume the same jobs — both run the same code against the same DB and storage, so assertions hold either way
 
-**Setup pattern (BullMQ example):**
+**Setup pattern (producer, from `src/video-processing/video-processing.producer.integration-spec.ts`):**
 ```typescript
-// In test module
-BullModule.forRoot({
-  connection: {
-    host: process.env.REDIS_HOST ?? 'localhost',
-    port: Number(process.env.REDIS_PORT ?? 6379),
-  },
-}),
-BullModule.registerQueue({ name: 'video-processing' }),
-```
+const queue = module.get<Queue>(getQueueToken(VIDEO_PROCESSING_QUEUE));
 
-```typescript
-describe('VideoService (integration - queue)', () => {
-  it('should enqueue a processing job on upload', async () => {
-    await videoService.upload(videoData);
+beforeAll(async () => {
+  await queue.pause(); // a running video-worker must not consume test jobs
+});
 
-    const queue = module.get<Queue>(getQueueToken('video-processing'));
-    const jobs = await queue.getJobs(['waiting']);
-    expect(jobs).toHaveLength(1);
-    expect(jobs[0].data).toEqual(
-      expect.objectContaining({ videoId: expect.any(String) }),
-    );
-  });
+afterAll(async () => {
+  await queue.resume();
+  await module.close();
+});
+
+it('enqueues the processing job with jobId = videoId', async () => {
+  const videoId = randomUUID();
+  await producer.enqueue(videoId);
+
+  const job = await queue.getJob(videoId);
+  expect(job?.data).toEqual({ videoId });
+  await job?.remove();
 });
 ```
 

@@ -1,7 +1,7 @@
 # phase-03-upload-processing — Progress
 
 **Status:** in_progress
-**SIs:** 14/15 completed
+**SIs:** 15/15 completed
 
 ### SI-03.1 — Infra: Redis + configuração raiz da fila
 - **Status:** completed
@@ -164,6 +164,11 @@
   - Beyond the ACs, scenario (a) also checks `audio_codec = aac`, `processed_at` set, the thumbnail's `Content-Type: image/jpeg`, and that the ranged response has exactly 1024 bytes. Scenario (b) also checks `thumbnail_url = null`.
 
 ### SI-03.15 — Documentação: CLAUDE.md, contrato de storage em produção e guia de testes
-- **Status:** pending
-- **Tests:** —
-- **Observations:** none
+- **Status:** completed
+- **Tests:** no tests (documentation). Every cited command was run against the live stack: `redis-cli ping` → `PONG`; seaweedfs `wget …/healthz` exit 0, host `curl` → 200; `docker compose ps -a storage-init` → `Exited (0)`; the `video-worker` log lines; `npx nest build --path tsconfig.worker.json` exit 0; `npm run start:worker:prod` boots (run under `timeout 20`, no process left behind). A script checked every backticked path, npm script, env var and Compose service in the four edited docs against the repo (only heuristic false positives), and that every `REDIS_*`/`STORAGE_*` key in `.env.example` appears in `nestjs-project/CLAUDE.md`.
+- **Observations:**
+  - **Departs from TA4 to match the code:** the plan asked for a note that tests override `STORAGE_PUBLIC_ENDPOINT` to the internal endpoint. No test does that: since SI-03.9 (reviewer-approved) they keep the real config and use `storageHttpRequest`. The testing guide (`external-systems.md`) and `nestjs-project/CLAUDE.md` document that real pattern and explicitly say not to override the public endpoint. The guide's code examples called methods that do not exist (`deletePrefix`, `presignUploadParts`, `fetch` on presigned URLs) and used dedicated test queues. They were replaced with the real `StorageService` API and the producer spec's pause/resume pattern, plus the shared-queue rules (never `drain`/`obliterate`, recovery via `HDEL bull:video-processing:meta paused`).
+  - **Beyond TA1, for consistency with the code (user requirement):** root `CLAUDE.md` → `## Repository Structure` said `next-frontend/` is "not yet initialized" (it has existed since phase 02) and listed a nonexistent comments module; both lines were corrected. `## Docker Networking` gained the single documented exception for `STORAGE_PUBLIC_ENDPOINT=http://localhost:8333` (browser-facing), which otherwise contradicted the "never `localhost`" rule. A `## Videos (upload and processing)` section was added. `docs/diagrams/software-arch.mermaid` (referenced by that section) still said Queue "TBD", Storage "S3 or MinIO" and Worker "FFmpeg"; those three labels were updated.
+  - `nestjs-project/CLAUDE.md` additions: the `video-worker` exception to the "don't start the app" rule (including the wait for `node_modules`); a readiness check for `redis`, `seaweedfs`, `storage-init` and `video-worker`; the service list (also `mailpit`, which was missing); worker commands and the reason for `dist-worker/`; a test-infrastructure subsection (services, the ffmpeg image rebuild for both `nestjs-api` and `video-worker`, storage URLs, shared queue, pipeline e2e, fixtures); a `REDIS_*`/`STORAGE_*` env table (including `STORAGE_ADMIN_*`, flagged as storage-init only); `/videos` endpoint summary with the snake_case convention; and two entrypoints in Architecture.
+  - `docs/storage-provisioning.md`: the credentials table lists only S3 actions the code really calls (checked call sites in `VideosService`/`VideoProcessingConsumer`). The thumbnails bucket needs only `PutObject` today, because nothing reads, lists or deletes thumbnails. `DeleteObject` on videos is used only for an assembled object rejected on complete. Block Public Access is relaxed only on the thumbnails bucket (`BlockPublicPolicy`/`RestrictPublicBuckets` off, ACLs stay blocked). It also records that SeaweedFS's dev `Write:<bucket>` also allows bucket CORS changes, which prod IAM must not repeat (from SI-03.2).
+  - Out of scope, noted: `.env.example` has `MAIL_FROM` unquoted with `<…>`, which its own CLAUDE.md "Environment File Conventions" says breaks parsing. `SWAGGER_ENABLED` and `APP_URL` are in the Joi schema but missing from `.env.example`.
