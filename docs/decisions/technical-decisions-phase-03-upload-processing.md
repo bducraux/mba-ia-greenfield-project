@@ -528,6 +528,51 @@ _Subprojects in scope:_
 
 ---
 
+## TD-16: Storage Bucket Provisioning (creation, CORS, public-read, lifecycle) per Environment
+
+**Scope:** Backend
+
+**Capability:** Serviço de armazenamento de arquivos (vídeos e thumbnails)
+
+**Context:** TD-02 (lifecycle rule aborting incomplete multipart uploads after 24h), TD-04 (CORS on the video bucket for `STORAGE_CORS_ORIGIN`) and TD-15 (private `STORAGE_BUCKET` + `STORAGE_THUMBNAILS_BUCKET` with anonymous `Read` and no `List`) all assume the buckets already exist and are configured. No TD says **who** does this in dev/test (SeaweedFS, TD-01) or in production. The answer shapes `nestjs-project/compose.yaml` (extra service, `depends_on`), integration-test setup, the IAM permissions the API's runtime credentials need, and the prod deploy contract.
+
+What SeaweedFS supports, checked against its wiki on 2026-10-04 (via Context7):
+- **Bucket creation:** S3 `CreateBucket`, or `weed shell` `s3.bucket.create`.
+- **CORS:** S3 `PutBucketCors` / `GetBucketCors` / `DeleteBucketCors` are supported per bucket (`aws s3api put-bucket-cors`). Limits: up to 100 rules, the only origin wildcard is `*`, no regex. TD-04's single explicit origin fits.
+- **Anonymous read:** this is **not** settable through a portable S3 call on SeaweedFS. It has three paths: (1) a static identity file passed to `-s3.config` with an `anonymous` identity whose actions are bucket-scoped (`"Read:<thumbnails-bucket>"`, no `List`); (2) `weed shell` `s3.anonymous.set -bucket … -access Read` (or `s3.bucket.access -user anonymous`), which only works from inside the SeaweedFS image; (3) `PutBucketPolicy` with `Principal: "*"`, honored for anonymous requests only since PR #11471 (merged 2026-09-26). On AWS the equivalent is a bucket policy (`s3:GetObject` on `bucket/*`) plus relaxing Block Public Access **only** on the thumbnails bucket.
+- **Lifecycle:** `PutBucketLifecycleConfiguration` with `AbortIncompleteMultipartUpload` is supported and is a "replay-eligible" rule. **Caveats:** (a) rules are enforced by a scheduled lifecycle worker (detection interval defaults to 1440 min, i.e. daily). `weed mini` bundles the admin server and maintenance worker; `weed server -s3` does **not**, so there the rule is stored but never applied. (b) The unit is `DaysAfterInitiation` (whole days), so "24h" is expressed as `1`. With a daily pass (and AWS's own day rounding), actual cleanup happens 24–48h after initiation. Tests can assert that the rule is **configured** (`GetBucketLifecycleConfiguration`), not that it was **enforced**.
+- **Client tooling:** `minio/mc` was deleted from Docker Hub on 2026-09-11, and TD-01 already recorded `quay.io/minio/*` returning 401. `mc anonymous set` also goes through bucket policies (path 3). The AWS CLI (`amazon/aws-cli`) covers create/CORS/lifecycle/policy with the same commands on SeaweedFS and on AWS, and `weed shell` covers the SeaweedFS-only anonymous grant.
+
+**Options:**
+
+### Option A: One-shot init container in Compose (dev/test) + infra-managed provisioning in production
+- A `storage-init` service (`amazon/aws-cli`, pinned) runs an idempotent script after `seaweedfs` is healthy. The script creates both buckets (ignoring `BucketAlreadyOwnedByYou`), puts CORS on the video bucket and puts the 1-day abort-multipart lifecycle rule, then exits 0. Anonymous `Read` on the thumbnails bucket is declared in the SeaweedFS `-s3.config` identity file (path 1). `nestjs-api` and the worker use `depends_on: storage-init: condition: service_completed_successfully`. In prod, the same declarative set (two buckets, CORS, lifecycle, public-read policy + scoped Block Public Access) is owned by infra (IaC or a provider runbook) and documented as the deploy contract.
+- **Pros:** Infra config stays out of application code (Single Responsibility). The API's runtime credentials need only object-level actions. Dev, the test suite (which runs inside `nestjs-api`) and CI all get buckets from one place before any process starts. Uses only the most portable SeaweedFS primitives (no dependency on the 2026-09 policy fix). The script is the same `aws s3api` syntax a prod operator would run.
+- **Cons:** One more Compose service and a mounted script/identity file. Bucket names and the CORS origin are repeated between the script (env-driven) and the Joi schema. Prod parity relies on a documented contract rather than shared code. Anonymous read uses a different mechanism in dev (identity file) than in prod (bucket policy).
+
+### Option B: Idempotent bootstrap at API/worker startup via `@aws-sdk/client-s3`
+- A `StorageBootstrapService` (`onApplicationBootstrap`) runs `HeadBucket` → `CreateBucket`, `PutBucketCors`, `PutBucketLifecycleConfiguration` and `PutBucketPolicy` (anonymous `GetObject` on the thumbnails bucket) in every environment.
+- **Pros:** No extra service. The configuration lives in TypeScript next to the Joi-validated keys, so it is a single source of truth. Self-healing on every start.
+- **Cons:** Runtime credentials need bucket-admin rights (`CreateBucket`, `PutBucketPolicy`, `PutBucketCors`) in prod, which is a large privilege surface for a web process. Public read **depends on SeaweedFS's newest policy path** (PR #11471), because the SDK cannot reach `weed shell` or the identity file. On AWS it also needs `PutPublicAccessBlock`. API and worker start concurrently and race on the same calls (idempotent, but noisy). Mixes infra ownership into the storage module.
+
+### Option C: Provisioning only in test setup (Jest `globalSetup`) + manual steps for dev
+- Integration/e2e `globalSetup` creates and configures the buckets through the SDK. Developers follow a README step (or a `weed shell` snippet) for local dev. Prod is left to the deploy.
+- **Pros:** Smallest footprint. Tests are self-contained.
+- **Cons:** `docker compose up` gives a broken dev environment (uploads fail with `NoSuchBucket`/CORS errors) until someone runs a manual step. The test path and the dev path diverge. Public read hits the same SDK limitation as B. No prod contract at all.
+
+### Option D: IaC everywhere (Terraform/OpenTofu AWS provider pointed at SeaweedFS in dev)
+- A `terraform apply` (in a container) provisions buckets, CORS, lifecycle and policy, using a custom S3 endpoint in dev and real AWS in prod.
+- **Pros:** One declarative definition for every environment, with drift detection.
+- **Cons:** New tool and state management for a single-node dev emulator. The AWS provider's assumptions (Block Public Access, ownership controls, `forcePathStyle`) do not fully hold against SeaweedFS. Public read again depends on the bucket-policy path. Heavy relative to this phase's scope, where no prod deploy pipeline exists yet.
+
+**Recommendation:** **Option A (Compose init container in dev/test + infra-managed prod)**. It keeps bucket-admin rights and infra ownership out of the NestJS runtime, gives dev, tests and CI a ready storage before the API starts, and relies only on SeaweedFS primitives that predate the 2026-09 policy fix (S3 CORS/lifecycle APIs plus the static anonymous identity). That keeps TD-15 B's portability argument intact. Proposed parameters for `/plan-build`: a SeaweedFS service running `weed mini` (pinned tag) so the lifecycle worker is bundled; an `amazon/aws-cli` init service with an idempotent script that reads `STORAGE_BUCKET`, `STORAGE_THUMBNAILS_BUCKET` and `STORAGE_CORS_ORIGIN` from the same `.env`. Video bucket CORS: `AllowedOrigins: [STORAGE_CORS_ORIGIN]`, `AllowedMethods: [PUT, GET, HEAD]`, `AllowedHeaders: ["*"]`, `ExposeHeaders: [ETag]`. Video bucket lifecycle: one rule, `Filter: {}`, `AbortIncompleteMultipartUpload.DaysAfterInitiation: 1`. Thumbnails bucket: anonymous `Read:<bucket>` only (no `List`), no CORS. API credentials (`STORAGE_ACCESS_KEY`) are scoped to object-level `Read`/`Write`/`List` on both buckets. Integration tests assume the buckets exist, clean up objects by key, and include one smoke check that the CORS and lifecycle configuration are present. The prod contract (two buckets, the same CORS/lifecycle, a thumbnails-only public-read policy with Block Public Access relaxed only there) is documented in `docs/`. Writing actual IaC code is deferred until a deploy phase exists. Risk to verify during implementation: the exact `weed mini` flags that load the identity file and admin credentials from env. If the identity file cannot coexist with `weed mini`'s embedded IAM, the init container falls back to running `weed shell s3.anonymous.set` from the SeaweedFS image.
+
+**Decision:** A (One-shot `storage-init` container in Compose for dev/test; production provisioning via infrastructure-as-code, documented only)
+
+**Note:** `amazon/aws-cli` and `chrislusf/seaweedfs` manifests confirmed pullable on 2026-10-04 (`docker manifest inspect`).
+
+---
+
 ## Decisions Summary
 
 | ID | Scope | Decision | Recommendation | Choice |
@@ -547,12 +592,13 @@ _Subprojects in scope:_
 | TD-13 | Frontend | FE test strategy for browser → storage traffic | A — fake storage origin (Playwright route + MSW) | Out of scope (UI deferred) |
 | TD-14 | Cross-layer | Input format validation before upload | B — declared allowlist at initiate + browser playability probe, ffprobe authoritative | A (browser probe deferred with UI) |
 | TD-15 | Cross-layer | Storage bucket topology (public thumbnails, private videos) | B — two buckets: private videos + public-read thumbnails bucket | B |
+| TD-16 | Backend | Storage bucket provisioning (creation, CORS, public-read, lifecycle) per environment | A — Compose init container (dev/test) + infra-managed prod | A |
 
 ---
 
 ## Notes for downstream pipeline
 
-- **Dependency chain:** TD-01 (S3 semantics) → TD-02 (presigned multipart) → TD-03, TD-04, TD-13. TD-04 → TD-05, TD-09 (internal vs public presign). TD-06 ↔ TD-09 (Option A of both assumes no transcoding). TD-07 → TD-08 (worker hosts the `@Processor`). TD-11 → TD-12 (polling stop condition). TD-10 is independent. TD-06 A → TD-14 (the ffprobe codec allowlist); TD-14 also feeds the initiate contract of TD-02 and the `failed` reason consumed by TD-12. TD-01 + TD-04 + TD-05 C → TD-15; TD-15 B adds `STORAGE_THUMBNAILS_BUCKET` to TD-04's key list, to be recorded as a TD-04 **Revision** (same option).
+- **Dependency chain:** TD-01 (S3 semantics) → TD-02 (presigned multipart) → TD-03, TD-04, TD-13. TD-04 → TD-05, TD-09 (internal vs public presign). TD-06 ↔ TD-09 (Option A of both assumes no transcoding). TD-07 → TD-08 (worker hosts the `@Processor`). TD-11 → TD-12 (polling stop condition). TD-10 is independent. TD-06 A → TD-14 (the ffprobe codec allowlist); TD-14 also feeds the initiate contract of TD-02 and the `failed` reason consumed by TD-12. TD-01 + TD-04 + TD-05 C → TD-15; TD-15 B adds `STORAGE_THUMBNAILS_BUCKET` to TD-04's key list, to be recorded as a TD-04 **Revision** (same option). TD-02 + TD-04 + TD-15 → TD-16 (who provisions the bucket-level config those TDs assume).
 - **Testing-guide update:** if TD-01 A is chosen, `testing-guide-nestjs-project/references/external-systems.md` § Object Storage must switch from "local filesystem" to "real S3 emulator (Docker)". If TD-13 A is chosen, `testing-guide-next-frontend/references/external-systems.md` § Object Storage should document the fake storage origin.
 - **Out of scope here (later phases):** player UI and download button (Phase 05); custom thumbnail upload, publish flow, visibility (Phase 04); view counting (Phase 05).
 
@@ -565,3 +611,5 @@ Sources consulted:
 - `.claude/skills/nestjs-best-practices/rules/micro-use-queues.md`, `.claude/skills/testing-guide-*/references/external-systems.md`
 - `docs/decisions/technical-decisions-next-frontend-config-base.md` (TD-03), `technical-decisions-phase-02-auth*.md`
 - SeaweedFS wiki — [S3 Bucket Policies](https://github.com/seaweedfs/seaweedfs/wiki/S3-Bucket-Policies) and [Simplest S3 Bucket and User Setup (`s3.anonymous.set`)](https://github.com/seaweedfs/seaweedfs/wiki/Simplest-S3-Bucket-and-User-Setup) — via Context7; [PR #11471 — evaluate bucket policy for anonymous requests (merged 2026-09-26)](https://github.com/seaweedfs/seaweedfs/pull/11471); [issue #7469 — bucket policy without effect (v4.0)](https://github.com/seaweedfs/seaweedfs/issues/7469) (TD-15)
+- SeaweedFS wiki — [S3 CORS](https://github.com/seaweedfs/seaweedfs/wiki/S3-CORS), [S3 Lifecycle](https://github.com/seaweedfs/seaweedfs/wiki/S3-Lifecycle), [S3 Lifecycle Recipes](https://github.com/seaweedfs/seaweedfs/wiki/S3-Lifecycle-Recipes), [S3 Lifecycle Operator Guide](https://github.com/seaweedfs/seaweedfs/wiki/S3-Lifecycle-Operator-Guide), [S3 Credentials (bucket-scoped actions)](https://github.com/seaweedfs/seaweedfs/wiki/S3-Credentials), [Docker Compose for S3 (anonymous identity)](https://github.com/seaweedfs/seaweedfs/wiki/Docker-Compose-for-S3), [Quick Start with weed mini](https://github.com/seaweedfs/seaweedfs/wiki/Quick-Start-with-weed-mini) — via Context7 (TD-16)
+- [MinIO images disappeared from Docker Hub — StableBuild](https://www.stablebuild.com/blog/minio-images-disappeared-from-docker-hub), [MinIO Docker Hub removal (2026-09)](https://bex.co/blog/2026/09/25/minio-docker-hub-removal-quay-repoint) (TD-16, `mc` client ruled out)
