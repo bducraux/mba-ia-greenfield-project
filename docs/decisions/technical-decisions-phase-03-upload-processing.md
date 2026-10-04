@@ -262,6 +262,9 @@ _Subprojects in scope:_
 **Decision:** A (BullMQ + Redis via `@nestjs/bullmq`)
 **Libraries:** @nestjs/bullmq, bullmq
 
+**Revisions:**
+- 2026-10-04 — Versions pinned at install (SI-03.1): `@nestjs/bullmq` 11.0.5 (12.x ships ESM only and breaks the project's CommonJS Jest setup; 11.0.5 is the newest CJS release accepting `@nestjs/common` ^11), `bullmq` 6.3.11, and `ioredis` 5.11.1 as an explicit dependency (bullmq 6 made it optional; 6.x conflicts with `typeorm` 0.3.28's `^5.0.4` peer range). Rationale: implementation-time compatibility, same option A.
+
 ---
 
 ## TD-08: Video Worker Topology
